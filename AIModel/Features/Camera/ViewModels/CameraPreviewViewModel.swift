@@ -9,64 +9,130 @@ import Combine
 
 // MARK: - ViewModel
 
-/// Owns the capture session lifecycle and still-photo capture.
+/// Owns the capture session, live guidance and still-photo capture.
+///
+/// Three guidance sources feed one screen:
+/// - **Composition** (every detection frame): subject position and size versus
+///   the user's profile, via `CompositionEvaluator` + `CompositionGuidanceEngine`.
+/// - **Scene** (about once a second): where the user is shooting (beach,
+///   mountain, city…) and best-practice fixes for that place, via
+///   `SceneUnderstandingSampler` + `SceneRulebook`.
+/// - **Objects** (same scene sample, no extra model): individual cars, tables,
+///   people… with labels and masks, and object-based advice via `ObjectRulebook`.
+/// - **Tilt** (Core Motion): device pitch versus the profile's horizon angle.
+///
+/// It also steers the lens: once a subject is detected, focus and exposure
+/// follow the subject's face area (`SubjectFocusTracker` +
+/// `SubjectFocusController`), like tapping the subject in the stock Camera app.
+///
+/// `RecommendationEngine` decides whether the composition or the scene advice
+/// owns the single instruction banner, so the screen never shows two
+/// contradictory instructions.
 @MainActor
 final class CameraPreviewViewModel: ObservableObject {
 
-    @Published var isSessionRunning = false
-    @Published var statusMessage = "Starting camera..."
+    // MARK: - Published state: session & capture
+
+    @Published private(set) var isSessionRunning = false
+    @Published private(set) var statusMessage = "Starting camera..."
     /// Briefly true after a capture so the screen can flash white.
-    @Published var showCaptureFlash = false
+    @Published private(set) var showCaptureFlash = false
     /// The most recently captured photo.
-    @Published var capturedImage: UIImage?
+    @Published private(set) var capturedImage: UIImage?
     /// Set when saving to the library fails, so the preview can show why.
-    @Published var saveErrorMessage: String?
+    @Published private(set) var saveErrorMessage: String?
+
+    // MARK: - Published state: guidance
 
     /// Detected subject box in NORMALISED view space (0...1), origin top-left.
     ///
     /// Nil when no person is detected. Vision reports against the raw sensor
-    /// frame with a bottom-left origin; `toViewSpace` handles both the flip and
-    /// the device rotation.
-    @Published var subjectBox: CGRect?
+    /// frame with a bottom-left origin; `toViewSpace` handles the flip.
+    @Published private(set) var subjectBox: CGRect?
 
-    /// The single live composition instruction, or nil when nothing is stable
-    /// enough to show. Driven by `CompositionGuidanceEngine`.
-    @Published var compositionInstruction: String?
+    /// The single live instruction (composition or scene), or nil when nothing
+    /// is stable enough to show.
+    @Published private(set) var compositionInstruction: String?
 
-    /// True once the composition has held "ready" long enough to announce.
-    @Published var isCompositionReady = false
+    /// True once the composition has held "ready" long enough to announce AND
+    /// no scene fix is pending.
+    @Published private(set) var isCompositionReady = false
 
     /// Honest limitation text when the profile is too thin to apply a target,
     /// or nil when preferences are being applied normally.
-    @Published var compositionLimitation: String?
-
-    /// High-level scene description from the on-device model, or nil when the
-    /// model is unavailable or has not yet produced a reading. Display-only —
-    /// never used for geometry.
-    @Published var sceneDescription: String?
-
-    /// Why the on-device scene model is unavailable, when it is. Surfaced so the
-    /// UI can explain the fallback rather than silently degrading.
-    @Published var sceneModelStatus: String?
+    @Published private(set) var compositionLimitation: String?
 
     /// Live tilt instruction derived from the device's physical pitch versus the
     /// profile's preferred horizon angle, or nil when on target / unavailable.
-    @Published var tiltInstruction: String?
+    @Published private(set) var tiltInstruction: String?
 
     /// True when Core Motion is producing attitude samples. False means tilt
     /// guidance is unavailable and the banner falls back to position-only.
-    @Published var isAttitudeActive = false
+    @Published private(set) var isAttitudeActive = false
+
+    // MARK: - Published state: focus
+
+    /// Where focus is locked on the subject, in NORMALISED view space (0...1),
+    /// origin top-left. Nil when no subject is tracked (normal autofocus) or the
+    /// lens cannot focus on a point, so the indicator never claims a focus
+    /// that is not happening.
+    @Published private(set) var focusPoint: CGPoint?
+
+    /// Increments on every new focus command so the indicator can pulse.
+    @Published private(set) var focusPulseID = 0
+
+    // MARK: - Published state: scene
+
+    /// The stabilised scene, or nil while unknown or when scene detection is
+    /// unavailable. The view maps it to a label and an icon.
+    @Published private(set) var sceneCategory: SceneCategory?
+
+    /// Why scene detection is unavailable, when it is (e.g. models missing from
+    /// the bundle). Surfaced so the UI can explain the fallback rather than
+    /// silently degrading.
+    @Published private(set) var sceneModelStatus: String?
+
+    /// Objects to label on screen (largest first, people excluded because the
+    /// subject has its own box). Each carries a mask for the future editor.
+    @Published private(set) var detectedObjects: [DetectedObject] = []
+
+    /// At most this many object labels are drawn, to keep the viewfinder readable.
+    private let maximumLabelledObjects = 6
+    /// Objects smaller than this share of the frame are not labelled.
+    private let minimumLabelledArea = 0.01
+
+    // MARK: - Inputs
 
     /// The preference profile the composition targets are derived from.
     /// Injected rather than read from a singleton so the camera can be opened
     /// with no profile at all, in which case no guidance is offered.
     var profile: PhotographicPreferenceProfile?
 
+    // MARK: - Guidance engines
+
     private let evaluator = CompositionEvaluator()
     private var guidance = CompositionGuidanceEngine()
-    private let sceneSampler = SceneInterpretationSampler()
     private let attitudeService = DeviceAttitudeService()
     private let tiltEvaluator = TiltEvaluator()
+
+    // MARK: - Focus
+
+    private var focusTracker = SubjectFocusTracker()
+    /// Created once the camera device is known (in `configureAndRun`).
+    private var focusController: SubjectFocusController?
+
+    // MARK: - Scene understanding
+
+    private let sceneUnderstanding: SceneUnderstandingSampler
+    private let sceneRulebook = SceneRulebook()
+    private let objectRulebook = ObjectRulebook()
+    private let recommendationEngine = RecommendationEngine()
+    private var sceneRecommendationFilter = StableValueFilter<Recommendation>()
+
+    private enum SceneModelState { case idle, loading, ready, unavailable }
+    private var sceneModelState = SceneModelState.idle
+
+    // MARK: - Capture session
 
     private let session = AVCaptureSession()
 
@@ -91,10 +157,20 @@ final class CameraPreviewViewModel: ObservableObject {
 
     private var hasConfigured = false
 
-    /// Must be held strongly: `AVCapturePhotoOutput` keeps its capture delegate
-    /// WEAKLY. Created as a temporary at the call site, it was deallocated the
-    /// instant `capturePhoto()` returned, so the completion callback never
-    /// fired — the shutter appeared to do nothing.
+    /// One Core Image context for every capture. Creating a context per frame
+    /// is expensive and was the old behaviour.
+    private static let ciContext = CIContext()
+
+    // MARK: - Init
+
+    /// The sampler is optional and created INSIDE the body: default argument
+    /// expressions are evaluated in a nonisolated context, so a main-actor
+    /// initializer cannot be called there.
+    init(sceneUnderstanding: SceneUnderstandingSampler? = nil) {
+        self.sceneUnderstanding = sceneUnderstanding ?? SceneUnderstandingSampler()
+    }
+
+    // MARK: - Lifecycle
 
     func start() {
         Task {
@@ -113,9 +189,43 @@ final class CameraPreviewViewModel: ObservableObject {
             isSessionRunning = true
             statusMessage = "Camera ready"
         }
+
+        prepareSceneUnderstandingIfNeeded()
     }
 
-    /// Adds the camera input and still-photo output, then starts the session.
+    func stop() {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            if session.isRunning { session.stopRunning() }
+        }
+        attitudeService.stop()
+        resetComposition()
+        resetFocus()
+        isSessionRunning = false
+    }
+
+    /// Loads the scene models once per view model. `start()` runs on every
+    /// `onAppear`, so without the state check the models would reload each
+    /// time the camera screen reappears.
+    ///
+    /// Failure is a graceful fallback: position guidance keeps working, only
+    /// the scene badge and scene advice are missing.
+    private func prepareSceneUnderstandingIfNeeded() {
+        guard sceneModelState == .idle else { return }
+        sceneModelState = .loading
+
+        Task {
+            do {
+                try await sceneUnderstanding.prepare()
+                sceneModelState = .ready
+                sceneModelStatus = nil
+            } catch {
+                sceneModelState = .unavailable
+                sceneModelStatus = "Scene detection is unavailable on this device."
+            }
+        }
+    }
+
+    /// Adds the camera input and video output, then starts the session.
     /// Runs off the main thread because `startRunning()` blocks for the camera
     /// boot duration, which would otherwise freeze the UI.
     private func configureAndRun() {
@@ -142,6 +252,11 @@ final class CameraPreviewViewModel: ObservableObject {
                 return
             }
             session.addInput(input)
+
+            let controller = SubjectFocusController(device: device)
+            Task { @MainActor in
+                focusController = controller
+            }
 
             // One video output for both detection and capture. The pixel format
             // must be declared before the output is added, and must be a native
@@ -192,14 +307,7 @@ final class CameraPreviewViewModel: ObservableObject {
         }
     }
 
-    func stop() {
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            if session.isRunning { session.stopRunning() }
-        }
-        attitudeService.stop()
-        resetComposition()
-        Task { @MainActor in isSessionRunning = false }
-    }
+    // MARK: - Capture
 
     /// Captures a still photo from the most recent video frame.
     ///
@@ -237,13 +345,11 @@ final class CameraPreviewViewModel: ObservableObject {
     private static func image(from sampleBuffer: CMSampleBuffer) -> UIImage? {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
-
+        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return nil }
         return UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
     }
 
-    /// Called by the capture delegate once a photo is ready.
+    /// Shows the captured photo and flashes the screen.
     func didCapture(image: UIImage?) {
         capturedImage = image
         showCaptureFlash = true
@@ -270,11 +376,10 @@ final class CameraPreviewViewModel: ObservableObject {
         guard let image = capturedImage else { return }
 
         let write: () -> Void = {
-            UIImageWriteToSavedPhotosAlbum(image, self, nil, nil)
+            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
         }
 
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        switch status {
+        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
         case .authorized, .limited:
             write()
             capturedImage = nil
@@ -299,50 +404,71 @@ final class CameraPreviewViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Frame handling
+
     /// Retains a frame for capture, releasing the one it replaces.
     ///
-    /// Releasing is required: holding several buffers starves the capture
-    /// memory pool and frames stop being delivered.
+    /// Replacing drops the previous buffer's only strong reference, freeing it.
+    /// Holding several buffers starves the capture memory pool and frames stop
+    /// being delivered.
     func storeFrame(_ buffer: CMSampleBuffer) {
-        // Replacing drops the previous buffer's only strong reference, freeing
-        // it. Holding several would starve the capture memory pool.
         lastFrameBuffer = buffer
     }
 
-    /// Runs person detection on a frame and publishes the resulting box.
+    /// Runs person detection on a frame, publishes the box, and offers the
+    /// frame to scene understanding.
     func detectSubject(in sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let frameW = CVPixelBufferGetWidth(pixelBuffer)
-        let frameH = CVPixelBufferGetHeight(pixelBuffer)
+        let frameSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
+                               height: CVPixelBufferGetHeight(pixelBuffer))
 
-        // Offer the frame for low-rate semantic interpretation. The sampler
-        // enforces its own cadence and in-flight guard, so calling it every
-        // detection frame is cheap — it self-throttles. Runs off the geometry
-        // path entirely: interpretation never blocks or alters detection.
-        offerSceneInterpretation(sampleBuffer)
+        offerSceneUnderstanding(pixelBuffer)
 
         Task {
             guard let visionRect = await detector.detect(in: pixelBuffer) else {
                 subjectBox = nil
+                updateFocus(subjectBox: nil)
                 // Still evaluate so a lost subject is reported, not silently
                 // treated as "nothing to guide on".
                 evaluateComposition(personBox: nil)
                 return
             }
 
-            // Vision reports against the raw sensor frame with a bottom-left
-            // origin, y up. The view is top-left, y down, and the phone may be
-            // rotated relative to the sensor — so flip and rotate.
-            let overlayRect = Self.toViewSpace(
-                visionRect,
-                frameSize: CGSize(width: frameW, height: frameH)
-            )
+            let overlayRect = Self.toViewSpace(visionRect, frameSize: frameSize)
             subjectBox = overlayRect
+            updateFocus(subjectBox: overlayRect)
             evaluateComposition(personBox: overlayRect)
         }
     }
 
-    /// Runs the composition evaluator and guidance engine on the current frame.
+    /// Hands the frame to the scene sampler.
+    ///
+    /// Safe to call every detection frame: the sampler enforces its own cadence
+    /// (about once a second, slower when the phone is hot) and drops frames
+    /// while a sample is in flight. The frame is only downscaled when a sample
+    /// is actually accepted. The update closure runs on the main actor (the
+    /// sampler guarantees it), so publishing from it is safe.
+    private func offerSceneUnderstanding(_ pixelBuffer: CVPixelBuffer) {
+        guard sceneModelState == .ready else { return }
+
+        sceneUnderstanding.offer(
+            makeImage: { FrameDownscaler.cgImage(from: pixelBuffer) },
+            subjectBox: subjectBox
+        ) { [weak self] snapshot in
+            guard let self else { return }
+            sceneCategory = snapshot.category == .unknown ? nil : snapshot.category
+            detectedObjects = Array(
+                snapshot.objects
+                    .filter { !$0.isPerson && $0.areaFraction >= self.minimumLabelledArea }
+                    .prefix(maximumLabelledObjects)
+            )
+        }
+    }
+
+    // MARK: - Composition + scene decision
+
+    /// Combines the profile-based composition evaluation with scene advice into
+    /// the single instruction on screen.
     ///
     /// Fed from the same detection pass that publishes `subjectBox`, so guidance
     /// and the live box can never disagree. No-ops when there is no profile —
@@ -356,9 +482,7 @@ final class CameraPreviewViewModel: ObservableObject {
         }
 
         let measurement = SceneMeasurement(
-            person: personBox.map {
-                SceneElement(kind: .person, box: $0, confidence: nil)
-            },
+            person: personBox.map { SceneElement(kind: .person, box: $0, confidence: nil) },
             personLost: false
         )
 
@@ -369,45 +493,94 @@ final class CameraPreviewViewModel: ObservableObject {
             photoCount: profile.photoCount
         )
 
-        compositionInstruction = guidance.update(with: evaluation)
-        isCompositionReady = guidance.isReadyStable
+        // The guidance engine must see every evaluation to keep its stability
+        // window honest, even on frames where scene advice wins the banner.
+        var instruction = guidance.update(with: evaluation)
+        var hasPendingSceneFix = false
+
+        let latestScene = sceneUnderstanding.latest
+        let sceneCandidates = sceneRulebook.recommendations(
+            scene: latestScene,
+            subjectBox: personBox,
+            preferences: ScenePreferences(profile: profile)
+        ) + objectRulebook.recommendations(
+            scene: latestScene,
+            subjectBox: personBox,
+            targetCenter: Self.usualSubjectCenter(for: profile)
+        )
+
+        switch recommendationEngine.decide(compositionIssue: evaluation.primaryIssue,
+                                           sceneRecommendations: sceneCandidates) {
+        case .composition:
+            _ = sceneRecommendationFilter.update(nil)
+        case .scene(let recommendation):
+            if let stable = sceneRecommendationFilter.update(recommendation) {
+                instruction = stable.message
+                hasPendingSceneFix = true
+            }
+        }
+
+        // Written once, at the end, so "ready" can never be shown while a
+        // scene fix is on screen.
+        compositionInstruction = instruction
+        isCompositionReady = guidance.isReadyStable && !hasPendingSceneFix
         compositionLimitation = evaluation.limitation
     }
 
-    /// Hands the current frame to the semantic sampler.
+    /// Centre of the dashed guide (where the user usually places the subject),
+    /// or nil when the profile has no confident habit. Same resolver the view
+    /// uses to draw the guide, so advice and drawing agree.
+    private static func usualSubjectCenter(for profile: PhotographicPreferenceProfile) -> CGPoint? {
+        let guide = SubjectGuideResolver.resolve(
+            position: profile.halfBodyPositionDistribution,
+            photoCount: profile.photoCount
+        )
+        return guide.isConfident ? guide.center : nil
+    }
+
+    // MARK: - Focus on subject
+
+    /// Feeds the latest subject box to the tracker and forwards its decision to
+    /// the lens.
     ///
-    /// Converts the sample buffer to a `CGImage` for the model. The sampler
-    /// self-throttles and downsamples, so this is safe to call every detection
-    /// frame. All results are delivered on the main actor because the published
-    /// properties they set are observed by SwiftUI.
-    private func offerSceneInterpretation(_ sampleBuffer: CMSampleBuffer) {
-        // Report availability once, so the UI can explain a missing model
-        // rather than showing nothing.
-        if sceneModelStatus == nil {
-            let status = SceneInterpretationService.availability()
-            sceneModelStatus = status.isAvailable ? nil : status.message
-            if !status.isAvailable { return }   // no point converting frames
-        }
+    /// The tracker only issues a command on first sighting, real movement or a
+    /// distance change, so the lens is not driven on every detection frame.
+    private func updateFocus(subjectBox: CGRect?) {
+        guard let controller = focusController else { return }
 
-        guard let cgImage = Self.cgImage(from: sampleBuffer) else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let command = focusTracker.update(subjectBox: subjectBox, at: now) else { return }
 
-        sceneSampler.offer(cgImage: cgImage) { [weak self] interpretation in
-            Task { @MainActor in
-                guard let self else { return }
-                if interpretation.isModelDerived {
-                    self.sceneDescription = interpretation.description
-                }
+        switch command {
+        case .focus(let viewPoint):
+            let connection = videoOutput.connection(with: .video)
+            let devicePoint = FocusPointConverter.devicePoint(
+                fromViewPoint: viewPoint,
+                orientation: connection?.videoOrientation ?? .portrait,
+                isMirrored: connection?.isVideoMirrored ?? false
+            )
+            controller.focus(atDevicePoint: devicePoint)
+
+            if controller.supportsFocusPoint {
+                focusPoint = viewPoint
+                focusPulseID &+= 1
             }
+
+        case .releaseToAuto:
+            controller.releaseToAuto()
+            focusPoint = nil
         }
     }
 
-    /// Converts a sample buffer to a `CGImage` for semantic interpretation.
-    /// Shares the Core Image path used for capture — no separate conversion.
-    private static func cgImage(from sampleBuffer: CMSampleBuffer) -> CGImage? {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        return CIContext().createCGImage(ciImage, from: ciImage.extent)
+    /// Returns the lens to normal autofocus and clears the indicator, so the
+    /// next camera session does not start focused on a stale point.
+    private func resetFocus() {
+        focusTracker.reset()
+        focusPoint = nil
+        focusController?.releaseToAuto()
     }
+
+    // MARK: - Attitude
 
     /// Starts streaming device attitude and feeds it to the tilt evaluator.
     ///
@@ -443,16 +616,23 @@ final class CameraPreviewViewModel: ObservableObject {
         isAttitudeActive = started
     }
 
-    /// Clears composition state — called when the camera stops so a stale
-    /// instruction does not persist into the next session.
+    // MARK: - Reset
+
+    /// Clears guidance state — called when the camera stops so a stale
+    /// instruction or scene does not persist into the next session.
     func resetComposition() {
         guidance.reset()
         compositionInstruction = nil
         isCompositionReady = false
         compositionLimitation = nil
-        sceneSampler.reset()
-        sceneDescription = nil
+
+        sceneUnderstanding.reset()
+        sceneRecommendationFilter.reset()
+        sceneCategory = nil
+        detectedObjects = []
     }
+
+    // MARK: - Geometry & orientation
 
     /// Converts a Vision rect into normalised view space.
     ///

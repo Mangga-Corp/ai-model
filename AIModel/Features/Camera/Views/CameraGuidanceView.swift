@@ -1,11 +1,10 @@
 import SwiftUI
 import AVFoundation
-import Combine
 
 /// Camera screen laid out like the native iOS Camera app.
 ///
 /// Structure is a `VStack` of three parts:
-///   1. A thin black top bar (close button)
+///   1. A thin black top bar
 ///   2. A flexible viewfinder that takes all remaining space
 ///   3. A black bottom bar holding the shutter button, centred
 ///
@@ -26,8 +25,8 @@ struct CameraGuidanceView: View {
 
     let onDismiss: () -> Void
 
-    /// Heights of the black bars. Top is thin (just the close button); bottom
-    /// is taller so the shutter has room, matching the stock app's proportions.
+    /// Heights of the black bars. Top is thin; bottom is taller so the shutter
+    /// has room, matching the stock app's proportions.
     private let topBarHeight: CGFloat = 56
     private let bottomBarHeight: CGFloat = 150
 
@@ -39,15 +38,16 @@ struct CameraGuidanceView: View {
         }
         .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
+        .statusBarHidden(true)
         .onAppear {
-            // Profile first, then attitude: the tilt target is derived from the
-            // profile's horizon preference, so it must be set before sensing
-            // starts. Doing it here (not in the session's async start) avoids a
-            // race where attitude begins before the profile is available.
+            // Order matters: the profile first, because the tilt target is
+            // derived from its horizon preference; then attitude; then the
+            // camera session (which also loads the scene models once).
             viewModel.profile = profile
             viewModel.startAttitudeIfPossible()
+            viewModel.start()
         }
-        .statusBarHidden(true)
+        .onDisappear { viewModel.stop() }
         .sheet(isPresented: capturedPhotoPresented) {
             CapturedPhotoView(
                 image: viewModel.capturedImage,
@@ -56,8 +56,6 @@ struct CameraGuidanceView: View {
                 onSave: { viewModel.saveCapturedPhoto() }
             )
         }
-        .onAppear { viewModel.start() }
-        .onDisappear { viewModel.stop() }
     }
 
     /// Presents the preview whenever a photo has been captured. Binding rather
@@ -85,36 +83,6 @@ struct CameraGuidanceView: View {
         // a preference the photographer does not have.
         guard guide.isConfident else { return nil }
         return guide
-    }
-
-    // MARK: - Composition Banner
-
-    /// The single live composition instruction, shown only when the guidance
-    /// engine has stabilised on one. Reuses the green design language of the
-    /// subject guide so it reads as part of the same coaching system.
-    ///
-    /// Deliberately one line and terse — the engine already picked the single
-    /// most important thing to say.
-    private var compositionBanner: some View {
-        Group {
-            if let instruction = viewModel.compositionInstruction {
-                Text(instruction)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(viewModel.isCompositionReady ? Color.green : Color.white)
-                    .lineLimit(1)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(
-                        (viewModel.isCompositionReady ? Color.green : Color.black)
-                            .opacity(0.72),
-                        in: Capsule()
-                    )
-                    .padding(.top, 12)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .animation(.easeInOut(duration: 0.2), value: instruction)
-            }
-        }
-        .allowsHitTesting(false)
     }
 
     // MARK: - Top Bar
@@ -152,12 +120,23 @@ struct CameraGuidanceView: View {
                                 isConfident: guide.isConfident
                             )
                         }
+                        // Object labels under the subject box: context, not target.
+                        ObjectLabelsOverlay(objects: viewModel.detectedObjects)
                         SubjectBoxOverlay(box: viewModel.subjectBox)
+                        // Focus square last: it marks where the lens is focused,
+                        // on the subject's face, like the stock Camera app.
+                        FocusIndicatorOverlay(point: viewModel.focusPoint,
+                                              pulseID: viewModel.focusPulseID)
                     }
                     .overlay(alignment: .top) {
-                        // One primary instruction at a time, pinned to the top
-                        // so it never covers the subject at frame centre.
-                        compositionBanner
+                        // Pinned to the top so it never covers the subject at
+                        // frame centre: where you are, then what to do.
+                        VStack(spacing: 8) {
+                            sceneBadge
+                            compositionBanner
+                        }
+                        .padding(.top, 12)
+                        .allowsHitTesting(false)
                     }
             } else {
                 unavailableView
@@ -165,6 +144,56 @@ struct CameraGuidanceView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+    }
+
+    // MARK: - Scene Badge
+
+    /// Small chip naming the detected location (beach, mountain, city…).
+    /// Hidden while the scene is unknown or scene detection is unavailable.
+    private var sceneBadge: some View {
+        Group {
+            if let scene = viewModel.sceneCategory {
+                Label(scene.displayName, systemImage: scene.systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .accessibilityLabel("Detected scene: \(scene.displayName)")
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.sceneCategory)
+    }
+
+    // MARK: - Composition Banner
+
+    /// The single live instruction (composition or scene), shown only when it
+    /// has stabilised. Green once the shot is ready.
+    ///
+    /// Deliberately one line and terse — the engines already picked the single
+    /// most important thing to say.
+    private var compositionBanner: some View {
+        Group {
+            if let instruction = viewModel.compositionInstruction {
+                Text(instruction)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(viewModel.isCompositionReady ? Color.green : Color.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        (viewModel.isCompositionReady ? Color.green : Color.black)
+                            .opacity(0.72),
+                        in: Capsule()
+                    )
+                    .padding(.horizontal, 16)
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.compositionInstruction)
     }
 
     // MARK: - Bottom Bar
@@ -192,6 +221,7 @@ struct CameraGuidanceView: View {
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.isSessionRunning)
+            .accessibilityLabel("Take photo")
 
             // White flash on capture, like the stock app.
             if viewModel.showCaptureFlash {
@@ -228,3 +258,19 @@ struct CameraGuidanceView: View {
     }
 }
 
+// MARK: - Scene icons
+
+/// SF Symbol per scene. Kept in the view layer so `SceneCategory` (Core)
+/// stays free of UI concerns.
+private extension SceneCategory {
+    var systemImage: String {
+        switch self {
+        case .beach:    return "beach.umbrella"
+        case .mountain: return "mountain.2"
+        case .urban:    return "building.2"
+        case .nature:   return "tree"
+        case .indoor:   return "house"
+        case .unknown:  return "questionmark.circle"
+        }
+    }
+}
