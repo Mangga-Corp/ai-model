@@ -1,16 +1,10 @@
-//
-//  SceneUnderstandingSampler.swift
-//  AIModel
-//
-//  Created by Laurentius Brandon Vikario on 15/10/26.
-//
-
 import Foundation
 import CoreGraphics
 
 /// Decides WHEN the scene pipeline runs. Lives on the main actor (project
 /// default) because it is driven from the camera view model; the heavy work
 /// happens inside the pipeline actor.
+@MainActor
 final class SceneUnderstandingSampler {
 
     var interval: TimeInterval = 1.0
@@ -42,10 +36,11 @@ final class SceneUnderstandingSampler {
     }
 
     /// Offers a frame. `makeImage` is only called when a sample is accepted, so
-    /// rejected frames cost nothing.
+    /// rejected frames cost nothing. `onUpdate` always runs on the main actor,
+    /// so callers can set `@Published` properties from it directly.
     func offer(makeImage: () -> CGImage?,
                subjectBox: CGRect?,
-               onUpdate: @escaping (SceneSnapshot) -> Void) {
+               onUpdate: @escaping @MainActor (SceneSnapshot) -> Void) {
         let time = now()
         guard !inFlight, time.timeIntervalSince(lastSample) >= effectiveInterval,
               let image = makeImage() else { return }
@@ -67,7 +62,8 @@ final class SceneUnderstandingSampler {
                 segmentation: raw.segmentation,
                 depth: raw.depth,
                 hints: raw.hints,
-                capturedAt: raw.capturedAt
+                capturedAt: raw.capturedAt,
+                objects: raw.objects
             )
             latest = snapshot
             onUpdate(snapshot)

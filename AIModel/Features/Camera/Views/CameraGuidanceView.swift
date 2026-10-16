@@ -120,6 +120,8 @@ struct CameraGuidanceView: View {
                                 isConfident: guide.isConfident
                             )
                         }
+                        // Object labels under the subject box: context, not target.
+                        ObjectLabelsOverlay(objects: viewModel.detectedObjects)
                         SubjectBoxOverlay(box: viewModel.subjectBox)
                     }
                     .overlay(alignment: .top) {

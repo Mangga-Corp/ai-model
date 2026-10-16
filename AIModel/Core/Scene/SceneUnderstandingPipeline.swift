@@ -1,10 +1,3 @@
-//
-//  SceneUnderstandingPipeline.swift
-//  AIModel
-//
-//  Created by Laurentius Brandon Vikario on 15/10/26.
-//
-
 import Foundation
 import CoreGraphics
 
@@ -22,15 +15,18 @@ actor SceneUnderstandingPipeline: SceneAnalyzing {
     private let depthEstimator: (any DepthEstimating)?
     private let classifier: (any ImageClassifying)?
     private let sceneClassifier: SceneClassifier
+    private let objectExtractor: ObjectExtractor
 
     init(segmenter: any SemanticSegmenting = DETRSegmenter(),
          depthEstimator: (any DepthEstimating)? = DepthAnythingEstimator(),
          classifier: (any ImageClassifying)? = FastViTClassifier(),
-         sceneClassifier: SceneClassifier = SceneClassifier()) {
+         sceneClassifier: SceneClassifier = SceneClassifier(),
+         objectExtractor: ObjectExtractor = ObjectExtractor()) {
         self.segmenter = segmenter
         self.depthEstimator = depthEstimator
         self.classifier = classifier
         self.sceneClassifier = sceneClassifier
+        self.objectExtractor = objectExtractor
     }
 
     /// Loads all models up front (first load compiles for the Neural Engine and
@@ -57,13 +53,16 @@ actor SceneUnderstandingPipeline: SceneAnalyzing {
             DepthStatistics.compute(depth: $0, subjectBox: subjectBox, segmentation: map)
         }
         let result = sceneClassifier.classify(segStats, hints: hints)
+        // Same DETR output, no extra inference: split it into objects.
+        let objects = objectExtractor.extract(from: map)
 
         return SceneSnapshot(category: result.category,
                              confidence: result.confidence,
                              segmentation: segStats,
                              depth: depthStats,
                              hints: hints,
-                             capturedAt: Date())
+                             capturedAt: Date(),
+                             objects: objects)
     }
 
     /// Optional models never fail the whole sample.

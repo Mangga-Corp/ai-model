@@ -17,6 +17,8 @@ import Combine
 /// - **Scene** (about once a second): where the user is shooting (beach,
 ///   mountain, city…) and best-practice fixes for that place, via
 ///   `SceneUnderstandingSampler` + `SceneRulebook`.
+/// - **Objects** (same scene sample, no extra model): individual cars, tables,
+///   people… with labels and masks, and object-based advice via `ObjectRulebook`.
 /// - **Tilt** (Core Motion): device pitch versus the profile's horizon angle.
 ///
 /// `RecommendationEngine` decides whether the composition or the scene advice
@@ -75,6 +77,15 @@ final class CameraPreviewViewModel: ObservableObject {
     /// silently degrading.
     @Published private(set) var sceneModelStatus: String?
 
+    /// Objects to label on screen (largest first, people excluded because the
+    /// subject has its own box). Each carries a mask for the future editor.
+    @Published private(set) var detectedObjects: [DetectedObject] = []
+
+    /// At most this many object labels are drawn, to keep the viewfinder readable.
+    private let maximumLabelledObjects = 6
+    /// Objects smaller than this share of the frame are not labelled.
+    private let minimumLabelledArea = 0.01
+
     // MARK: - Inputs
 
     /// The preference profile the composition targets are derived from.
@@ -93,6 +104,7 @@ final class CameraPreviewViewModel: ObservableObject {
 
     private let sceneUnderstanding: SceneUnderstandingSampler
     private let sceneRulebook = SceneRulebook()
+    private let objectRulebook = ObjectRulebook()
     private let recommendationEngine = RecommendationEngine()
     private var sceneRecommendationFilter = StableValueFilter<Recommendation>()
 
@@ -130,8 +142,8 @@ final class CameraPreviewViewModel: ObservableObject {
 
     // MARK: - Init
 
-    init(sceneUnderstanding: SceneUnderstandingSampler = SceneUnderstandingSampler()) {
-        self.sceneUnderstanding = sceneUnderstanding
+    init(sceneUnderstanding: SceneUnderstandingSampler? = nil) {
+        self.sceneUnderstanding = sceneUnderstanding ?? SceneUnderstandingSampler()
     }
 
     // MARK: - Lifecycle
@@ -411,7 +423,13 @@ final class CameraPreviewViewModel: ObservableObject {
             makeImage: { FrameDownscaler.cgImage(from: pixelBuffer) },
             subjectBox: subjectBox
         ) { [weak self] snapshot in
-            self?.sceneCategory = snapshot.category == .unknown ? nil : snapshot.category
+            guard let self else { return }
+            sceneCategory = snapshot.category == .unknown ? nil : snapshot.category
+            detectedObjects = Array(
+                snapshot.objects
+                    .filter { !$0.isPerson && $0.areaFraction >= self.minimumLabelledArea }
+                    .prefix(maximumLabelledObjects)
+            )
         }
     }
 
@@ -448,10 +466,15 @@ final class CameraPreviewViewModel: ObservableObject {
         var instruction = guidance.update(with: evaluation)
         var hasPendingSceneFix = false
 
+        let latestScene = sceneUnderstanding.latest
         let sceneCandidates = sceneRulebook.recommendations(
-            scene: sceneUnderstanding.latest,
+            scene: latestScene,
             subjectBox: personBox,
             preferences: ScenePreferences(profile: profile)
+        ) + objectRulebook.recommendations(
+            scene: latestScene,
+            subjectBox: personBox,
+            targetCenter: Self.usualSubjectCenter(for: profile)
         )
 
         switch recommendationEngine.decide(compositionIssue: evaluation.primaryIssue,
@@ -470,6 +493,17 @@ final class CameraPreviewViewModel: ObservableObject {
         compositionInstruction = instruction
         isCompositionReady = guidance.isReadyStable && !hasPendingSceneFix
         compositionLimitation = evaluation.limitation
+    }
+
+    /// Centre of the dashed guide (where the user usually places the subject),
+    /// or nil when the profile has no confident habit. Same resolver the view
+    /// uses to draw the guide, so advice and drawing agree.
+    private static func usualSubjectCenter(for profile: PhotographicPreferenceProfile) -> CGPoint? {
+        let guide = SubjectGuideResolver.resolve(
+            position: profile.halfBodyPositionDistribution,
+            photoCount: profile.photoCount
+        )
+        return guide.isConfident ? guide.center : nil
     }
 
     // MARK: - Attitude
@@ -521,6 +555,7 @@ final class CameraPreviewViewModel: ObservableObject {
         sceneUnderstanding.reset()
         sceneRecommendationFilter.reset()
         sceneCategory = nil
+        detectedObjects = []
     }
 
     // MARK: - Geometry & orientation

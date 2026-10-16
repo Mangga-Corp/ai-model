@@ -1,10 +1,3 @@
-//
-//  SceneSnapshot.swift
-//  AIModel
-//
-//  Created by Laurentius Brandon Vikario on 15/10/26.
-//
-
 import Foundation
 import CoreGraphics
 
@@ -23,4 +16,7 @@ nonisolated struct SceneSnapshot: Sendable, Equatable {
     let depth: DepthStatistics?
     let hints: [ClassificationHint]
     let capturedAt: Date
+    /// Individual objects (cars, chairs…), largest first. Empty when the model
+    /// output carried no labels.
+    var objects: [DetectedObject] = []
 }
