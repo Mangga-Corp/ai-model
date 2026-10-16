@@ -123,6 +123,10 @@ struct CameraGuidanceView: View {
                         // Object labels under the subject box: context, not target.
                         ObjectLabelsOverlay(objects: viewModel.detectedObjects)
                         SubjectBoxOverlay(box: viewModel.subjectBox)
+                        // Focus square last: it marks where the lens is focused,
+                        // on the subject's face, like the stock Camera app.
+                        FocusIndicatorOverlay(point: viewModel.focusPoint,
+                                              pulseID: viewModel.focusPulseID)
                     }
                     .overlay(alignment: .top) {
                         // Pinned to the top so it never covers the subject at

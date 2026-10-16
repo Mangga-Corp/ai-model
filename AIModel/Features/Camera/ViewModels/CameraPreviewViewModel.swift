@@ -21,6 +21,10 @@ import Combine
 ///   people… with labels and masks, and object-based advice via `ObjectRulebook`.
 /// - **Tilt** (Core Motion): device pitch versus the profile's horizon angle.
 ///
+/// It also steers the lens: once a subject is detected, focus and exposure
+/// follow the subject's face area (`SubjectFocusTracker` +
+/// `SubjectFocusController`), like tapping the subject in the stock Camera app.
+///
 /// `RecommendationEngine` decides whether the composition or the scene advice
 /// owns the single instruction banner, so the screen never shows two
 /// contradictory instructions.
@@ -66,6 +70,17 @@ final class CameraPreviewViewModel: ObservableObject {
     /// guidance is unavailable and the banner falls back to position-only.
     @Published private(set) var isAttitudeActive = false
 
+    // MARK: - Published state: focus
+
+    /// Where focus is locked on the subject, in NORMALISED view space (0...1),
+    /// origin top-left. Nil when no subject is tracked (normal autofocus) or the
+    /// lens cannot focus on a point, so the indicator never claims a focus
+    /// that is not happening.
+    @Published private(set) var focusPoint: CGPoint?
+
+    /// Increments on every new focus command so the indicator can pulse.
+    @Published private(set) var focusPulseID = 0
+
     // MARK: - Published state: scene
 
     /// The stabilised scene, or nil while unknown or when scene detection is
@@ -99,6 +114,12 @@ final class CameraPreviewViewModel: ObservableObject {
     private var guidance = CompositionGuidanceEngine()
     private let attitudeService = DeviceAttitudeService()
     private let tiltEvaluator = TiltEvaluator()
+
+    // MARK: - Focus
+
+    private var focusTracker = SubjectFocusTracker()
+    /// Created once the camera device is known (in `configureAndRun`).
+    private var focusController: SubjectFocusController?
 
     // MARK: - Scene understanding
 
@@ -142,6 +163,9 @@ final class CameraPreviewViewModel: ObservableObject {
 
     // MARK: - Init
 
+    /// The sampler is optional and created INSIDE the body: default argument
+    /// expressions are evaluated in a nonisolated context, so a main-actor
+    /// initializer cannot be called there.
     init(sceneUnderstanding: SceneUnderstandingSampler? = nil) {
         self.sceneUnderstanding = sceneUnderstanding ?? SceneUnderstandingSampler()
     }
@@ -175,6 +199,7 @@ final class CameraPreviewViewModel: ObservableObject {
         }
         attitudeService.stop()
         resetComposition()
+        resetFocus()
         isSessionRunning = false
     }
 
@@ -227,6 +252,11 @@ final class CameraPreviewViewModel: ObservableObject {
                 return
             }
             session.addInput(input)
+
+            let controller = SubjectFocusController(device: device)
+            Task { @MainActor in
+                focusController = controller
+            }
 
             // One video output for both detection and capture. The pixel format
             // must be declared before the output is added, and must be a native
@@ -397,6 +427,7 @@ final class CameraPreviewViewModel: ObservableObject {
         Task {
             guard let visionRect = await detector.detect(in: pixelBuffer) else {
                 subjectBox = nil
+                updateFocus(subjectBox: nil)
                 // Still evaluate so a lost subject is reported, not silently
                 // treated as "nothing to guide on".
                 evaluateComposition(personBox: nil)
@@ -405,6 +436,7 @@ final class CameraPreviewViewModel: ObservableObject {
 
             let overlayRect = Self.toViewSpace(visionRect, frameSize: frameSize)
             subjectBox = overlayRect
+            updateFocus(subjectBox: overlayRect)
             evaluateComposition(personBox: overlayRect)
         }
     }
@@ -504,6 +536,48 @@ final class CameraPreviewViewModel: ObservableObject {
             photoCount: profile.photoCount
         )
         return guide.isConfident ? guide.center : nil
+    }
+
+    // MARK: - Focus on subject
+
+    /// Feeds the latest subject box to the tracker and forwards its decision to
+    /// the lens.
+    ///
+    /// The tracker only issues a command on first sighting, real movement or a
+    /// distance change, so the lens is not driven on every detection frame.
+    private func updateFocus(subjectBox: CGRect?) {
+        guard let controller = focusController else { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let command = focusTracker.update(subjectBox: subjectBox, at: now) else { return }
+
+        switch command {
+        case .focus(let viewPoint):
+            let connection = videoOutput.connection(with: .video)
+            let devicePoint = FocusPointConverter.devicePoint(
+                fromViewPoint: viewPoint,
+                orientation: connection?.videoOrientation ?? .portrait,
+                isMirrored: connection?.isVideoMirrored ?? false
+            )
+            controller.focus(atDevicePoint: devicePoint)
+
+            if controller.supportsFocusPoint {
+                focusPoint = viewPoint
+                focusPulseID &+= 1
+            }
+
+        case .releaseToAuto:
+            controller.releaseToAuto()
+            focusPoint = nil
+        }
+    }
+
+    /// Returns the lens to normal autofocus and clears the indicator, so the
+    /// next camera session does not start focused on a stale point.
+    private func resetFocus() {
+        focusTracker.reset()
+        focusPoint = nil
+        focusController?.releaseToAuto()
     }
 
     // MARK: - Attitude
