@@ -56,6 +56,10 @@ struct ProfileDetailView: View {
                 positioningCard(profile)
                 depthCard(profile)
 
+                if let environment = profile.environment {
+                    EnvironmentProfileSection(profile: environment, thumbnail: thumb)
+                }
+
                 if !profile.limitations.isEmpty {
                     ResultCard {
                         VStack(alignment: .leading, spacing: 8) {

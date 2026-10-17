@@ -23,6 +23,7 @@
 		180E4A113078D738005A17C4 /* PreferenceAnalysisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A013078D738005A17C4 /* PreferenceAnalysisTests.swift */; };
 		180E4A123078D738005A17C4 /* PreferenceProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A023078D738005A17C4 /* PreferenceProfileTests.swift */; };
 		180E4A143078D738005A17C4 /* CameraAngleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A043078D738005A17C4 /* CameraAngleTests.swift */; };
+		180E4A163078D738005A17C4 /* EnvironmentAnalysisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,6 +61,7 @@
 		180E4A013078D738005A17C4 /* PreferenceAnalysisTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferenceAnalysisTests.swift; sourceTree = "<group>"; };
 		180E4A023078D738005A17C4 /* PreferenceProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferenceProfileTests.swift; sourceTree = "<group>"; };
 		180E4A043078D738005A17C4 /* CameraAngleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAngleTests.swift; sourceTree = "<group>"; };
+		180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentAnalysisTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -122,6 +124,7 @@
 				180E4A013078D738005A17C4 /* PreferenceAnalysisTests.swift */,
 				180E4A023078D738005A17C4 /* PreferenceProfileTests.swift */,
 				180E4A043078D738005A17C4 /* CameraAngleTests.swift */,
+				180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */,
 			);
 			path = AIModelTests;
 			sourceTree = "<group>";
@@ -235,6 +238,7 @@
 				180E4A113078D738005A17C4 /* PreferenceAnalysisTests.swift in Sources */,
 				180E4A123078D738005A17C4 /* PreferenceProfileTests.swift in Sources */,
 				180E4A143078D738005A17C4 /* CameraAngleTests.swift in Sources */,
+				180E4A163078D738005A17C4 /* EnvironmentAnalysisTests.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */

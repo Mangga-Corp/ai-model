@@ -339,6 +339,10 @@ nonisolated struct PhotoResult: Identifiable, Sendable, Equatable {
     let errors: [String]
     let limitations: [String]
 
+    /// Object and Environment Analysis. Always set by the pipeline; nil only on
+    /// results built by hand (tests, previews) that predate this feature.
+    var environment: EnvironmentAnalysisResult?
+
     func assessment(for kind: CharacteristicKind) -> Assessment {
         switch kind {
         case .cameraAngle:         return cameraAngle.assessment

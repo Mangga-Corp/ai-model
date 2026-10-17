@@ -38,7 +38,9 @@ nonisolated enum Consistency: String, Sendable, Hashable {
 /// Photos with no valid observation are listed in `excludedPhotoIDs` and are
 /// never counted for or against any category.
 nonisolated struct CategoryFinding<Category: Hashable & Sendable>: Sendable, Equatable {
-    let kind: CharacteristicKind
+    /// The camera characteristic this finding belongs to; nil for the
+    /// environment and composition findings, which are not one of the four.
+    let kind: CharacteristicKind?
     /// Photos that contributed a valid observation.
     let validObservationCount: Int
     let counts: [Category: Int]
@@ -168,6 +170,10 @@ nonisolated struct PreferenceProfile: Sendable, Equatable {
     /// Characteristics for which no supported pattern could be stated.
     let unsupportedCharacteristics: [CharacteristicKind]
     let limitations: [String]
+
+    /// Object and environment tendencies, kept apart from the four characteristics
+    /// above so existing readers (including the camera hand-off) are unaffected.
+    var environment: EnvironmentProfile?
 
     var isEmpty: Bool { photosWithValidEvidenceCount == 0 }
 }

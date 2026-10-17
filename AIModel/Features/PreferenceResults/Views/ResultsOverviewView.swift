@@ -75,12 +75,31 @@ struct ResultsOverviewView: View {
                                text: positionText(profile), fallback: profile.horizontalPosition.summary)
                     profileRow(.environmentalDepth, finding: profile.depthStructure.pattern, strength: profile.depthStructure.strength,
                                text: profile.depthStructure.dominant?.label, fallback: profile.depthStructure.summary)
+                    if let environment = profile.environment, !environment.isEmpty { environmentRow(environment) }
                     Text("Tap for distributions, variation and the photos behind each finding.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// One line each for the scene tendency and the composition tendency, stated only when a pattern exists.
+    private func environmentRow(_ e: EnvironmentProfile) -> some View {
+        let scene = e.sceneDependent.sceneCategory
+        let scale = e.transferable.subjectScale
+        return VStack(alignment: .leading, spacing: 3) {
+            Label("Environment and composition", systemImage: "photo.on.rectangle.angled").font(.caption).foregroundStyle(.secondary)
+            if let dominant = scene.dominant {
+                Text(dominant.displayName).font(.body.weight(.semibold))
+            } else {
+                Text(scene.pattern.label).font(.body.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            Text(scale.dominant.map { "Subject: \($0.label.lowercased()) in most photos" } ?? scale.summary)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private func positionPattern(_ p: PreferenceProfile) -> PatternKind {

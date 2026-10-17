@@ -20,6 +20,9 @@ nonisolated enum PhotoResultBuilder {
         let positioning = SubjectPositioningMeasurer.measure(selection: selection, evidence: evidence)
         let depth = EnvironmentalDepthInterpreter.interpret(selection: selection, evidence: evidence,
                                                             artifacts: artifacts)
+        // Object and Environment Analysis reads the same cached evidence; it runs no model.
+        let environment = EnvironmentInterpreter.interpret(selection: selection, evidence: evidence,
+                                                           artifacts: artifacts, positioning: positioning)
 
         let problems = evidence.problems
         let ranAnything = evidence.runs.contains { $0.state == .produced || $0.state == .nothingDetected }
@@ -35,7 +38,7 @@ nonisolated enum PhotoResultBuilder {
             id: prepared.id, selectionOrder: prepared.selectionOrder, localIdentifier: prepared.localIdentifier,
             preparation: record, status: status, evidence: evidence,
             cameraAngle: angle, subjectFraming: framing, subjectPositioning: positioning,
-            environmentalDepth: depth, errors: problems, limitations: [])
+            environmentalDepth: depth, errors: problems, limitations: [], environment: environment)
     }
 
     /// Result for a photo that could not be read: every characteristic is
@@ -56,6 +59,6 @@ nonisolated enum PhotoResultBuilder {
                 selection: SubjectSelectionInfo(detectedCount: 0, eligibleCount: 0, primaryCandidateID: nil, isAmbiguous: false),
                 secondarySubjects: [], assessment: assessment),
             environmentalDepth: EnvironmentalDepthResult(structure: .unknown, metrics: nil, sceneBands: nil, assessment: assessment),
-            errors: [reason], limitations: [])
+            errors: [reason], limitations: [], environment: EnvironmentInterpreter.unavailable(reason))
     }
 }

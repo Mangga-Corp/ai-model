@@ -19,6 +19,34 @@ nonisolated enum OverlayRasterizer {
         return image(from: pixels, width: grid.width, height: grid.height)
     }
 
+    /// Every supported region tinted by its colour; people are left untinted so the
+    /// subject stays visible. With `highlight`, only that region is emphasised.
+    /// Draws the model's actual class map, cell for cell: nothing is smoothed or invented.
+    static func segmentation(_ grid: SegmentationGrid, highlight: String? = nil) -> UIImage? {
+        guard grid.width > 0, grid.height > 0, grid.classIndices.count == grid.width * grid.height else { return nil }
+        let mapping = SegmentationTaxonomy.Mapping(labels: grid.labels)
+        var colours: [(r: Double, g: Double, b: Double)?] = []
+        var alphas: [Double] = []
+        for f in mapping.families {
+            if f.group == .person { colours.append(nil); alphas.append(0); continue }
+            colours.append(RegionPalette.rgb(for: f))
+            alphas.append(highlight == nil ? 0.50 : (highlight == f.key ? 0.72 : 0.08))
+        }
+        var pixels = [UInt8](repeating: 0, count: grid.width * grid.height * 4)
+        for i in 0..<(grid.width * grid.height) {
+            let c = Int(grid.classIndices[i])
+            guard c < mapping.familyOfClass.count else { continue }
+            let f = mapping.familyOfClass[c]
+            guard f >= 0, let rgb = colours[f] else { continue }
+            let a = alphas[f]
+            pixels[i * 4 + 0] = UInt8(rgb.r * a * 255)
+            pixels[i * 4 + 1] = UInt8(rgb.g * a * 255)
+            pixels[i * 4 + 2] = UInt8(rgb.b * a * 255)
+            pixels[i * 4 + 3] = UInt8(a * 255)
+        }
+        return image(from: pixels, width: grid.width, height: grid.height)
+    }
+
     /// Near = warm, far = cool.
     static func depthHeatmap(_ grid: DepthGrid) -> UIImage? {
         guard grid.width > 0, grid.height > 0, grid.nearness.count == grid.width * grid.height else { return nil }

@@ -119,13 +119,14 @@ nonisolated enum ProfileAggregator {
             horizontalPosition: horizontal, verticalPosition: vertical,
             positioning: positioning, depthStructure: depthStructure, depth: depth,
             coverage: coverage, unsupportedCharacteristics: unsupported,
-            limitations: limitations(total: total, analyzed: analyzed, coverage: coverage, ordered: ordered))
+            limitations: limitations(total: total, analyzed: analyzed, coverage: coverage, ordered: ordered),
+            environment: EnvironmentProfileAggregator.aggregate(ordered))
     }
 
     // MARK: Categorical finding
 
     static func finding<C: Hashable & Sendable>(
-        kind: CharacteristicKind,
+        kind: CharacteristicKind?,
         all results: [PhotoResult],
         possible: Int,
         name: (C) -> String,

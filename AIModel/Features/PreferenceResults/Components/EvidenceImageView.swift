@@ -2,7 +2,7 @@ import SwiftUI
 
 /// An overlay that explains a measurement.
 enum EvidenceLayer: String, CaseIterable, Identifiable, Hashable {
-    case subjectBox, center, thirdsGrid, poseLandmarks, horizon, sceneLines, personMask, depthMap
+    case subjectBox, center, thirdsGrid, poseLandmarks, horizon, sceneLines, personMask, depthMap, segmentation, elementBoxes
 
     var id: String { rawValue }
 
@@ -16,6 +16,8 @@ enum EvidenceLayer: String, CaseIterable, Identifiable, Hashable {
         case .sceneLines: return "Vertical lines"
         case .personMask: return "Person mask"
         case .depthMap: return "Depth"
+        case .segmentation: return "Segmentation"
+        case .elementBoxes: return "Elements"
         }
     }
 
@@ -29,6 +31,8 @@ enum EvidenceLayer: String, CaseIterable, Identifiable, Hashable {
         case .sceneLines: return "building.2"
         case .personMask: return "person.fill"
         case .depthMap: return "square.3.layers.3d.down.right"
+        case .segmentation: return "square.on.square.dashed"
+        case .elementBoxes: return "rectangle.3.group"
         }
     }
 
@@ -50,6 +54,10 @@ enum EvidenceLayer: String, CaseIterable, Identifiable, Hashable {
             layers.append(.personMask)
         }
         if artifacts?.depth != nil { layers.append(.depthMap) }
+        if let env = photo.environment {
+            if artifacts?.segmentation != nil, case .available = env.segmentation.availability { layers.append(.segmentation) }
+            if env.elements.candidates.contains(where: { $0.role != .uncertain }) { layers.append(.elementBoxes) }
+        }
         return layers
     }
 
@@ -70,6 +78,8 @@ struct EvidenceImageView: View {
     let photo: PhotoResult
     let artifacts: PhotoArtifacts?
     let layers: Set<EvidenceLayer>
+    /// With the segmentation layer, emphasises one region (its `SemanticFamily.key`).
+    var highlightedRegionID: String? = nil
 
     var body: some View {
         Image(uiImage: image)
@@ -96,6 +106,11 @@ struct EvidenceImageView: View {
         if layers.contains(.depthMap), let depth = artifacts?.depth,
            let img = OverlayImageCache.image(key: "\(photo.id)-depth", make: { OverlayRasterizer.depthHeatmap(depth) }) {
             Image(uiImage: img).resizable().interpolation(.medium).frame(width: size.width, height: size.height)
+        }
+        if layers.contains(.segmentation), let seg = artifacts?.segmentation,
+           let img = OverlayImageCache.image(key: "\(photo.id)-seg-\(highlightedRegionID ?? "all")",
+                                             make: { OverlayRasterizer.segmentation(seg, highlight: highlightedRegionID) }) {
+            Image(uiImage: img).resizable().interpolation(.none).frame(width: size.width, height: size.height)
         }
         if layers.contains(.personMask), let seg = artifacts?.segmentation,
            let img = OverlayImageCache.image(key: "\(photo.id)-mask", make: { OverlayRasterizer.personMask(seg) }) {
@@ -150,6 +165,26 @@ struct EvidenceImageView: View {
                 lines.move(to: point(segment.start)); lines.addLine(to: point(segment.end))
             }
             context.stroke(lines, with: .color(.cyan), lineWidth: 2.5)
+        }
+
+        if layers.contains(.elementBoxes), let env = photo.environment {
+            var placed: [CGRect] = []
+            for candidate in env.elements.candidates where candidate.role != .uncertain {
+                guard let m = env.composition.elements.first(where: { $0.familyKey == candidate.familyKey }) else { continue }
+                let color: Color = candidate.role == .dominant ? .yellow : .orange
+                let box = rect(m.boundingBox)
+                context.stroke(Path(roundedRect: box, cornerRadius: 3), with: .color(color), lineWidth: 2.5)
+                let c = point(m.centroid)
+                context.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)), with: .color(color))
+
+                let label = context.resolve(Text(m.label).font(.caption2.bold()).foregroundStyle(Color.black))
+                let measured = label.measure(in: CGSize(width: 240, height: 40))
+                var pill = CGRect(x: box.minX + 3, y: box.minY + 3, width: measured.width + 8, height: measured.height + 2)
+                while placed.contains(where: { $0.intersects(pill) }), pill.maxY < size.height { pill.origin.y += pill.height + 2 }
+                placed.append(pill)
+                context.fill(Path(roundedRect: pill, cornerRadius: 4), with: .color(color))
+                context.draw(label, at: CGPoint(x: pill.minX + 4, y: pill.minY + 1), anchor: .topLeading)
+            }
         }
 
         if layers.contains(.poseLandmarks), let poses = photo.evidence?.pose.value {

@@ -59,6 +59,8 @@ struct PhotoResultDetailView: View {
                     CharacteristicCard(kind: kind, photo: photo)
                 }
 
+                EnvironmentSection(photo: photo, image: image, artifacts: artifacts)
+
                 ResultCard {
                     DisclosureGroup(isExpanded: $showModelOutput) {
                         ModelOutputSection(photo: photo).padding(.top, 8)
