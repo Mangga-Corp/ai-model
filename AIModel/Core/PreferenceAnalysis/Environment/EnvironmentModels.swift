@@ -59,6 +59,24 @@ nonisolated struct RawLabelShare: Sendable, Equatable {
     let areaFraction: Double
 }
 
+/// Whether a measured region may support user-facing claims.
+///
+/// STRUCTURAL VALIDITY ("the mask decoded and was measured") is a different thing
+/// from SEMANTIC RELIABILITY ("the label is believable"). DETR gives no
+/// per-pixel confidence, so a well-formed mask can still carry a wrong label. A
+/// region that is implausible on its face is `setAside`: it stays listed and
+/// measured, but is excluded from the ranking, the scene inference, the element
+/// measurements and the preference tendencies.
+nonisolated enum RegionReliability: Sendable, Equatable {
+    /// Nothing argues against using the region. This does NOT mean the label is verified.
+    case eligible
+    /// Kept for display only, with the reason.
+    case setAside(String)
+
+    var isEligible: Bool { if case .eligible = self { return true } else { return false } }
+    var reason: String? { if case .setAside(let r) = self { return r } else { return nil } }
+}
+
 nonisolated struct SemanticRegion: Sendable, Equatable, Identifiable {
     var id: String { family.key }
     let family: SemanticFamily
@@ -77,6 +95,8 @@ nonisolated struct SemanticRegion: Sendable, Equatable, Identifiable {
     let subjectRelation: RegionSubjectRelation?
     /// DETR's semantic output has no per-pixel confidence, so this is always nil.
     let modelConfidence: Double?
+    /// Semantic reliability, assessed after measurement (see `RegionReliabilityAssessor`).
+    var reliability: RegionReliability = .eligible
 
     var isValid: Bool { validity == .valid && geometry != nil }
 }
@@ -116,6 +136,17 @@ nonisolated enum SegmentationAvailability: Sendable, Equatable {
     }
 }
 
+/// INTERPRETATION ELIGIBILITY: may a downstream claim (dominant element, scene,
+/// presence or absence of an element) be emitted from this segmentation?
+/// Separate from structural validity (the map decoded) and from per-region reliability.
+nonisolated enum InterpretationEligibility: Sendable, Equatable {
+    case eligible
+    case limited(String)
+
+    var isEligible: Bool { if case .eligible = self { return true } else { return false } }
+    var reason: String? { if case .limited(let r) = self { return r } else { return nil } }
+}
+
 nonisolated struct ObjectSegmentationResult: Sendable, Equatable {
     let availability: SegmentationAvailability
     let gridWidth: Int
@@ -125,7 +156,8 @@ nonisolated struct ObjectSegmentationResult: Sendable, Equatable {
     /// Every DETR `person` pixel, all people merged. Matches the existing summary.
     let allPeopleFraction: Double
     let human: HumanMaskMeasurement?
-    /// Supported pixels that are neither a person nor something they carry or wear.
+    /// Surroundings that can be interpreted: supported pixels that are neither a
+    /// person, nor something they carry or wear, nor a region that was set aside.
     let environmentFraction: Double
     /// Pixels whose class is outside the supported label table.
     let unsupportedFraction: Double
@@ -138,10 +170,37 @@ nonisolated struct ObjectSegmentationResult: Sendable, Equatable {
 
     /// Every region with a valid mask, including items the subject carries.
     var validRegions: [SemanticRegion] { regions.filter(\.isValid) }
-    /// Valid regions that are part of the surroundings. Carried or worn items
-    /// (tie, bag, skis) belong to the subject and are left out of the ranking,
-    /// scene inference and element measurements.
-    var environmentalRegions: [SemanticRegion] { validRegions.filter { $0.family.group.isEnvironmental } }
+    /// Valid regions that are part of the surroundings AND eligible for claims.
+    /// Carried or worn items (tie, bag, skis) belong to the subject, and regions
+    /// that were set aside as unreliable are not trusted; both are left out of
+    /// the ranking, scene inference, element measurements and preference tendencies.
+    var environmentalRegions: [SemanticRegion] {
+        validRegions.filter { $0.family.group.isEnvironmental && $0.reliability.isEligible }
+    }
+
+    /// Valid regions whose label was judged implausible. Never evidence that something is absent.
+    var setAsideRegions: [SemanticRegion] { validRegions.filter { !$0.reliability.isEligible } }
+
+    /// Share of the image whose class this analysis can interpret.
+    var supportedCoverage: Double { 1 - unsupportedFraction }
+
+    /// Decoded output must cover at least this much of the image with supported labels.
+    static let minimumSupportedCoverage = 0.5
+    /// At least this much of the frame must show interpretable surroundings before
+    /// anything is said about what is, or is not, there.
+    static let minimumInterpretableSurroundings = 0.15
+
+    /// Whether the decoded output may support claims about the surroundings.
+    var interpretation: InterpretationEligibility {
+        guard availability.hasValidOutput else { return .limited("segmentation is unavailable") }
+        if supportedCoverage < Self.minimumSupportedCoverage {
+            return .limited(String(format: "only %.0f%% of the image has labels this analysis supports", supportedCoverage * 100))
+        }
+        if environmentFraction < Self.minimumInterpretableSurroundings {
+            return .limited(String(format: "only %.0f%% of the frame shows surroundings that can be interpreted", environmentFraction * 100))
+        }
+        return .eligible
+    }
 
     static func unavailable(_ reason: String, invalid: Bool = false) -> ObjectSegmentationResult {
         ObjectSegmentationResult(
@@ -168,10 +227,14 @@ nonisolated struct ScoreComponent: Sendable, Equatable {
     let name: String
     /// 0...1.
     let value: Double
+    /// The nominal weight (0.40 / 0.25 / 0.20 / 0.15).
     let weight: Double
     /// False when the evidence was unavailable (the weight is then redistributed).
     let used: Bool
     let note: String
+    /// The weight this term actually carried: its nominal weight divided by the sum of
+    /// the weights in use, or 0 when unused. The score is exactly Σ value × effectiveWeight.
+    var effectiveWeight: Double = 0
 }
 
 nonisolated struct ElementCandidate: Sendable, Equatable, Identifiable {
@@ -189,7 +252,10 @@ nonisolated struct ElementCandidate: Sendable, Equatable, Identifiable {
     let centroid: CGPoint
     let horizontal: HorizontalZone
     let vertical: VerticalZone
+    /// Connected pieces the combined region is made of (1 = one piece).
+    var pieceCount: Int = 1
     /// Rule-based grade of how well the segmentation supports this candidate.
+    /// Not a model probability: DETR provides none.
     let quality: EvidenceQuality
     let rationale: String
     let uncertainty: [String]

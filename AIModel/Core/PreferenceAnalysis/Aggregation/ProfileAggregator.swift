@@ -312,7 +312,8 @@ nonisolated enum ProfileAggregator {
             }
         }
         if (coverage[.cameraAngle]?.determinedCount ?? 0) < total {
-            out.append("Camera angle needs a measurable horizon next to a visible person; many photos do not offer one.")
+            // Matches CameraAngleInterpreter: a horizon is one decisive source, vertical structure is the other.
+            out.append("Camera angle is reported only when a person is detected and the photo shows a horizon or enough vertical structure to judge it from; otherwise it is left unknown.")
         }
         out.append("Depth values are relative within each photo and are not distances.")
         return out

@@ -69,6 +69,11 @@ struct CompositionEvaluation: Equatable {
     /// UI copy rather than a false "ready".
     let limitation: String?
 
+    /// How the preference-aware check of horizontal position and scale came out, or nil when
+    /// the profile carries no adapted preferences (the checks then ran as they always did).
+    /// Lets callers tell an actual mismatch from missing evidence or an unusable measurement.
+    var preferenceOutcome: PersonalizedCompositionOutcome? = nil
+
     static let noSubject = CompositionEvaluation(
         primaryIssue: .noSubject,
         isReady: false,
@@ -105,11 +110,16 @@ struct CompositionEvaluator {
 
     // MARK: - Evaluation
 
+    /// - Parameter personalization: When present, subject SCALE and HORIZONTAL position are
+    ///   judged against the adapted, evidence-checked preferences instead of `size` and the
+    ///   x axis of `position`. When nil, every check runs exactly as before. Vertical
+    ///   position, clipping and the no-subject cases are never affected by it.
     func evaluate(
         measurement: SceneMeasurement,
         position: PositionDistribution?,
         size: SizeDistribution?,
-        photoCount: Int
+        photoCount: Int,
+        personalization: LivePersonalization? = nil
     ) -> CompositionEvaluation {
 
         // No person detected this frame.
@@ -144,10 +154,27 @@ struct CompositionEvaluator {
             issues.append(.subjectClipped)
         }
 
+        // Preference-aware judgement of scale and horizontal position, only when the camera
+        // profile carries adapted preferences. The tolerances are this evaluator's own.
+        let personalized: PersonalizedCompositionOutcome? = personalization.map { context in
+            PersonalizedCompositionEvaluator(positionTolerance: positionTolerance,
+                                             sizeTolerance: sizeTolerance,
+                                             clipMargin: clipMargin)
+                .evaluate(box: person.box, frameSize: context.frameSize, isMirrored: context.isMirrored,
+                          capturedAt: context.capturedAt, now: context.now,
+                          preferences: context.preferences)
+        }
+
         // 2. Size — only when the profile actually has a consistent size
         //    preference. Without one, imposing a universal ratio is exactly what
         //    the task forbids.
-        if let size, size.isConsistent, size.meanArea > 0 {
+        if let personalized {
+            // A supported scale preference that the live box falls outside of. Missing
+            // evidence and unreliable measurements raise nothing.
+            if case .mismatch(let deviation) = personalized.scale {
+                issues.append(deviation.offset < 0 ? .subjectTooSmall : .subjectTooLarge)
+            }
+        } else if let size, size.isConsistent, size.meanArea > 0 {
             let preferred = size.meanArea
             let lower = preferred * (1 - sizeTolerance)
             let upper = preferred * (1 + sizeTolerance)
@@ -156,6 +183,11 @@ struct CompositionEvaluator {
             } else if area > upper {
                 issues.append(.subjectTooLarge)
             }
+        }
+
+        // 3a. Horizontal position from the adapted preference, when there is one.
+        if let personalized, personalized.horizontal.isMismatch {
+            issues.append(.subjectOffCentreHorizontally)
         }
 
         // 3. Position — only when the profile has a consistent placement.
@@ -170,22 +202,32 @@ struct CompositionEvaluator {
             let targetX = position.meanX
             let targetY = position.meanY
 
-            if abs(Double(center.x) - targetX) > positionTolerance {
+            // Horizontal position is judged above when adapted preferences exist.
+            if personalized == nil, abs(Double(center.x) - targetX) > positionTolerance {
                 issues.append(.subjectOffCentreHorizontally)
             }
+            // Vertical position is outside the personalised dimensions: unchanged.
             if abs(Double(center.y) - targetY) > positionTolerance {
                 issues.append(.subjectOffCentreVertically)
             }
         }
 
-        let limitation = buildLimitation(position: position, size: size, photoCount: photoCount)
+        let limitation: String?
+        if let personalized {
+            limitation = buildLimitation(personalized)
+        } else {
+            limitation = buildLimitation(position: position, size: size, photoCount: photoCount)
+        }
 
         return CompositionEvaluation(
             primaryIssue: issues.first,
-            isReady: issues.isEmpty,
+            // "Ready" is never claimed while a checked preference could not be checked because the
+            // live measurement was unreliable.
+            isReady: issues.isEmpty && !(personalized?.hasUnreliableObservation ?? false),
             subjectAreaFraction: area,
             subjectCenter: center,
-            limitation: limitation
+            limitation: limitation,
+            preferenceOutcome: personalized
         )
     }
 
@@ -197,6 +239,17 @@ struct CompositionEvaluator {
             || box.minY <= m
             || box.maxX >= 1.0 - m
             || box.maxY >= 1.0 - m
+    }
+
+    /// The same honesty for the preference-aware path.
+    private func buildLimitation(_ outcome: PersonalizedCompositionOutcome) -> String? {
+        if outcome.hasUnreliableObservation {
+            return "The subject measurement is not reliable right now, so your position and size preferences were not checked."
+        }
+        if outcome.isEntirelyUnavailable {
+            return "Your reference photos do not support a position or size preference for this camera orientation, so only framing checks apply."
+        }
+        return nil
     }
 
     /// Explains which preferences were unavailable, so the UI can be honest

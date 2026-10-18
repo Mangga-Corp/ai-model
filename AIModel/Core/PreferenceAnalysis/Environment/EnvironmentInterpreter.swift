@@ -75,30 +75,46 @@ nonisolated enum EnvironmentInterpreter {
         let analysis = SegmentationRegionAnalyzer.analyze(grid, depth: depth, subject: subject)
         if let problem = analysis.problem { return .unavailable(problem, invalid: true) }
 
-        let valid = analysis.regions.filter(\.isValid)
-        let environmental = valid.filter { $0.family.group.isEnvironmental }
+        // STRUCTURAL validity is settled (the map decoded, regions were measured). SEMANTIC
+        // reliability is judged separately: implausible labels are set aside, not trusted.
+        let regions = RegionReliabilityAssessor.assess(analysis.regions)
+        let valid = regions.filter(\.isValid)
+        let setAside = valid.filter { !$0.reliability.isEligible }
+        let environmental = valid.filter { $0.family.group.isEnvironmental && $0.reliability.isEligible }
         let availability: SegmentationAvailability = environmental.isEmpty ? .noEnvironmentalRegions : .available
 
-        // Quality reflects how much of the scene the supported labels explain.
+        // Surroundings that can be interpreted: set-aside area is neither scenery nor "nothing".
+        let setAsideSurroundings = setAside.filter { $0.family.group.isEnvironmental }.reduce(0) { $0 + $1.areaFraction }
+        let surroundings = max(0, analysis.environmentFraction - setAsideSurroundings)
+
+        // Grade of how much of the scene the supported labels explain. A rule-based coverage
+        // check, not a model probability and not a claim that the labels are right.
         var quality: EvidenceQuality
-        if analysis.environmentFraction >= 0.30 && analysis.unsupportedFraction <= 0.05 { quality = .high }
-        else if analysis.environmentFraction >= 0.15 && analysis.unsupportedFraction <= 0.25 { quality = .moderate }
+        if surroundings >= 0.30 && analysis.unsupportedFraction <= 0.05 { quality = .high }
+        else if surroundings >= 0.15 && analysis.unsupportedFraction <= 0.25 { quality = .moderate }
         else { quality = .low }
         if analysis.unsupportedFraction > 0.25 { quality = quality.lowered() }
+        if !setAside.isEmpty { quality = quality.lowered() }
 
         func pct(_ v: Double) -> String { String(format: "%.1f%%", v * 100) }
 
         var limitations = [
             ObjectSegmentationResult.semanticNote,
-            "The model gives one class per pixel and no confidence, so there is no model probability for any region; quality grades here only reflect how much of the scene is explained.",
+            "The model gives one class per pixel and no confidence, so there is no model probability for any region. The grade here only reflects how much of the scene is explained; it does not say the labels are correct.",
             "The photo is stretched to the model's input size; positions and area shares are preserved, aspect ratio is not.",
         ]
         if analysis.unsupportedFraction > 0.05 {
             limitations.append("\(pct(analysis.unsupportedFraction)) of pixels have labels outside the supported set and are not part of any region.")
         }
-        let tooSmall = analysis.regions.filter { !$0.isValid }
+        let tooSmall = regions.filter { !$0.isValid }
         if !tooSmall.isEmpty {
             limitations.append("\(tooSmall.count) region(s) are too small to measure reliably and were left out of the measurements.")
+        }
+        for region in setAside {
+            limitations.append("Set aside: \(region.family.displayName) (\(pct(region.areaFraction))). \(region.reliability.reason ?? "")")
+        }
+        if !setAside.isEmpty {
+            limitations.append("A region set aside is shown but not used for rankings, scene, measurements or preferences. Its area is treated as unknown, never as an empty background.")
         }
         if let human = analysis.human, !human.isValid, let reason = human.invalidReason {
             limitations.append("No valid person mask: \(reason).")
@@ -108,29 +124,39 @@ nonisolated enum EnvironmentInterpreter {
             EvidenceReference(source: .detrSegmentation, origin: .rawModelOutput, role: .primary, label: "Class map",
                               value: "\(analysis.gridWidth) × \(analysis.gridHeight) cells, person (all people merged) \(pct(analysis.allPeopleFraction))"),
         ]
-        evidenceRefs += valid.prefix(5).map { r in
+        evidenceRefs += valid.filter { $0.reliability.isEligible }.prefix(5).map { r in
             EvidenceReference(source: .detrSegmentation, origin: .derivedMeasurement, role: .supporting,
                               label: "\(r.family.displayName) region",
                               value: "\(pct(r.areaFraction)) of the image; \(r.rawLabels.map(\.label).joined(separator: ", "))")
         }
+        evidenceRefs += setAside.map { r in
+            EvidenceReference(source: .detrSegmentation, origin: .interpretation, role: .limiting,
+                              label: "Set aside: \(r.family.displayName)", value: r.reliability.reason ?? "")
+        }
 
+        let asideText = setAside.map { "\($0.family.displayName) \(pct($0.areaFraction))" }.joined(separator: ", ")
         var explanation: String
         switch availability {
         case .available:
             let top = environmental.prefix(4).map { "\($0.family.displayName) \(pct($0.areaFraction))" }.joined(separator: ", ")
-            explanation = "Segmentation found \(environmental.count) environmental region\(environmental.count == 1 ? "" : "s") covering \(pct(analysis.environmentFraction)) of the image besides the person. Largest: \(top)."
-            let carried = valid.count - environmental.count
+            explanation = "Segmentation found \(environmental.count) environmental region\(environmental.count == 1 ? "" : "s") covering \(pct(surroundings)) of the image besides the person. Largest: \(top)."
+            let carried = valid.count - environmental.count - setAside.filter { $0.family.group.isEnvironmental }.count
             if carried > 0 {
                 explanation += " \(carried) more region\(carried == 1 ? " is" : "s are") something the person carries or wears, and is not counted as surroundings."
             }
         default:
-            explanation = "Segmentation ran successfully but found no supported environmental region large enough to measure. This is a genuine empty result, not a missing one."
+            explanation = setAside.isEmpty
+                ? "Segmentation ran successfully but found no supported environmental region large enough to measure. This is a genuine empty result, not a missing one."
+                : "Segmentation ran, but the only environmental regions it reported were set aside as unreliable, so nothing about the surroundings is claimed."
+        }
+        if !setAside.isEmpty {
+            explanation += " Set aside as unreliable and not used: \(asideText)."
         }
 
         return ObjectSegmentationResult(
             availability: availability, gridWidth: analysis.gridWidth, gridHeight: analysis.gridHeight,
-            regions: analysis.regions, allPeopleFraction: analysis.allPeopleFraction, human: analysis.human,
-            environmentFraction: analysis.environmentFraction, unsupportedFraction: analysis.unsupportedFraction,
+            regions: regions, allPeopleFraction: analysis.allPeopleFraction, human: analysis.human,
+            environmentFraction: surroundings, unsupportedFraction: analysis.unsupportedFraction,
             unsupportedLabels: analysis.unsupportedLabels,
             assessment: Assessment(status: .determined, quality: quality, explanation: explanation,
                                    evidence: evidenceRefs, limitations: limitations))

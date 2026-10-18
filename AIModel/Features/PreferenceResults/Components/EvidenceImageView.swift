@@ -80,6 +80,8 @@ struct EvidenceImageView: View {
     let layers: Set<EvidenceLayer>
     /// With the segmentation layer, emphasises one region (its `SemanticFamily.key`).
     var highlightedRegionID: String? = nil
+    /// With the segmentation layer, region keys drawn faintly because their label was set aside as unreliable.
+    var setAsideRegionIDs: Set<String> = []
 
     var body: some View {
         Image(uiImage: image)
@@ -108,8 +110,8 @@ struct EvidenceImageView: View {
             Image(uiImage: img).resizable().interpolation(.medium).frame(width: size.width, height: size.height)
         }
         if layers.contains(.segmentation), let seg = artifacts?.segmentation,
-           let img = OverlayImageCache.image(key: "\(photo.id)-seg-\(highlightedRegionID ?? "all")",
-                                             make: { OverlayRasterizer.segmentation(seg, highlight: highlightedRegionID) }) {
+           let img = OverlayImageCache.image(key: "\(photo.id)-seg-\(highlightedRegionID ?? "all")-\(setAsideRegionIDs.sorted().joined(separator: ","))",
+                                             make: { OverlayRasterizer.segmentation(seg, highlight: highlightedRegionID, setAside: setAsideRegionIDs) }) {
             Image(uiImage: img).resizable().interpolation(.none).frame(width: size.width, height: size.height)
         }
         if layers.contains(.personMask), let seg = artifacts?.segmentation,

@@ -63,16 +63,23 @@ nonisolated enum EnvironmentElementRanker {
         }
 
         let pool = segmentation.environmentalRegions.filter { $0.areaFraction >= candidateFloor }
+        let setAside = segmentation.setAsideRegions.filter { $0.family.group.isEnvironmental }
+        let setAsideNote = setAside.isEmpty ? ""
+            : " Set aside as unreliable and not used: " + setAside.map { "\($0.family.displayName) \(String(format: "%.0f%%", $0.areaFraction * 100))" }.joined(separator: ", ") + "."
         guard !pool.isEmpty else {
             let why = segmentation.availability == .noEnvironmentalRegions
-                ? "The segmentation ran successfully and found no supported environmental region besides the person."
+                ? "The segmentation ran successfully and found no supported environmental region besides the person." + setAsideNote
                 : "The segmentation found environmental regions, but none covers the 2% of the image needed to be ranked."
             return DominantElementsResult(
                 outcome: .noEnvironmentalRegions, candidates: [],
                 assessment: .insufficient(why, limitations: [ObjectSegmentationResult.semanticNote]))
         }
 
-        var scored = pool.map { score($0, context: context, unsupported: segmentation.unsupportedFraction) }
+        // INTERPRETATION ELIGIBILITY. If too little of the frame carries interpretable
+        // surroundings, regions are still listed but no element is called dominant or secondary.
+        let withheld = segmentation.interpretation.reason
+
+        var scored = pool.map { score($0, context: context, unsupported: segmentation.unsupportedFraction, setAsideNearby: !setAside.isEmpty) }
         scored.sort {
             if $0.score != $1.score { return $0.score > $1.score }
             if $0.region.areaFraction != $1.region.areaFraction { return $0.region.areaFraction > $1.region.areaFraction }
@@ -82,7 +89,7 @@ nonisolated enum EnvironmentElementRanker {
         // Roles.
         var dominantKeys: [String] = []
         var firstDominantScore = 0.0
-        for s in scored where s.score >= dominantMinimumScore && s.quality >= .moderate {
+        for s in scored where withheld == nil && s.score >= dominantMinimumScore && s.quality >= .moderate {
             if dominantKeys.isEmpty {
                 dominantKeys.append(s.region.family.key)
                 firstDominantScore = s.score
@@ -94,7 +101,10 @@ nonisolated enum EnvironmentElementRanker {
         let candidates: [ElementCandidate] = scored.enumerated().map { index, s in
             let role: ElementRole
             var uncertainty = s.uncertainty
-            if dominantKeys.contains(s.region.family.key) {
+            if let withheld {
+                role = .uncertain
+                uncertainty.append("No role is assigned because \(withheld).")
+            } else if dominantKeys.contains(s.region.family.key) {
                 role = .dominant
             } else if s.score >= dominantMinimumScore && s.quality < .moderate {
                 role = .uncertain
@@ -109,7 +119,8 @@ nonisolated enum EnvironmentElementRanker {
                 rank: index + 1, familyKey: s.region.family.key, label: s.region.family.displayName,
                 group: s.region.family.group, kind: s.region.family.kind, role: role, score: s.score,
                 components: s.components, areaFraction: s.region.areaFraction, centroid: geometry.centroid,
-                horizontal: geometry.horizontal, vertical: geometry.vertical, quality: s.quality,
+                horizontal: geometry.horizontal, vertical: geometry.vertical, pieceCount: geometry.componentCount,
+                quality: s.quality,
                 rationale: s.rationale, uncertainty: uncertainty, evidence: s.evidence)
         }
 
@@ -125,6 +136,10 @@ nonisolated enum EnvironmentElementRanker {
             limitations.append(String(format: "%.0f%% of the image has labels outside the supported set, so the ranking sees only part of the scene.",
                                       segmentation.unsupportedFraction * 100))
         }
+        if !setAside.isEmpty {
+            limitations.append("Regions set aside as unreliable are ignored by the ranking and their area is treated as unknown: " + setAside.map(\.family.displayName).joined(separator: ", ") + ".")
+        }
+        limitations.append("The score is a heuristic between 0 and 1. It is not a probability, and a high score does not mean the model's label is correct.")
 
         let summary = EvidenceReference(
             source: nil, origin: .interpretation, role: .primary, label: "Ranking",
@@ -133,20 +148,20 @@ nonisolated enum EnvironmentElementRanker {
 
         if dominant.isEmpty {
             let top = candidates[0]
+            let explanation = withheld.map { "No element is called dominant because \($0). The regions are listed for reference only." + setAsideNote }
+                ?? String(format: "No environmental element stands out clearly. The highest-ranked, %@, scores %.2f against the %.2f needed for a dominant role, so no dominant element is reported.",
+                          top.label, top.score, dominantMinimumScore) + setAsideNote
             return DominantElementsResult(
                 outcome: .noStandoutElement, candidates: candidates,
-                assessment: Assessment(
-                    status: .insufficientEvidence, quality: .none,
-                    explanation: String(format: "No environmental element stands out clearly. The highest-ranked, %@, scores %.2f against the %.2f needed for a dominant role, so no dominant element is reported.",
-                                        top.label, top.score, dominantMinimumScore),
-                    evidence: evidence, limitations: limitations))
+                assessment: Assessment(status: .insufficientEvidence, quality: .none, explanation: explanation,
+                                       evidence: evidence, limitations: limitations))
         }
 
         let names = dominant.map(\.label)
         let nameText = names.count == 1 ? names[0] : names.joined(separator: " and ")
         let first = dominant[0]
         var explanation = "\(nameText) \(names.count == 1 ? "is" : "are") the dominant environmental \(names.count == 1 ? "element" : "elements"). "
-        explanation += first.rationale + " The person remains the primary subject; elements are ranked on their own."
+        explanation += first.rationale + " The person remains the primary subject; elements are ranked on their own." + setAsideNote
         if candidates.count > dominant.count {
             let others = candidates.filter { $0.role != .dominant }.prefix(3).map(\.label).joined(separator: ", ")
             explanation += " Also present: \(others)."
@@ -173,7 +188,7 @@ nonisolated enum EnvironmentElementRanker {
     /// Rounds DOWN, so "almost everything" never prints as 100% while pieces remain.
     private static func wholePercent(_ v: Double) -> String { "\(Int((v * 100).rounded(.down)))%" }
 
-    private static func score(_ region: SemanticRegion, context: Context, unsupported: Double) -> Scored {
+    private static func score(_ region: SemanticRegion, context: Context, unsupported: Double, setAsideNearby: Bool) -> Scored {
         let g = region.geometry!
         let name = region.family.displayName
 
@@ -187,7 +202,7 @@ nonisolated enum EnvironmentElementRanker {
             name: "Adjacency to the person", value: min(1, ring / adjacencySaturation), weight: weightAdjacency,
             used: adjacencyUsed,
             note: adjacencyUsed ? String(format: "fills %.0f%% of the area around the person", ring * 100)
-                                : "no main person, so not used")
+                                : (context.subjectPresent ? "no surrounding band could be measured, so not used" : "no main person, so not used"))
 
         let coherence = ScoreComponent(
             name: "Coherence", value: g.largestComponentShare, weight: weightCoherence, used: true,
@@ -200,10 +215,15 @@ nonisolated enum EnvironmentElementRanker {
             name: "Relative depth", value: nearness, weight: weightDepth, used: depthUsed,
             note: depthUsed ? String(format: "relative nearness %.2f (0 far, 1 near)", nearness) : "depth unavailable, so not used")
 
-        let components = [extent, adjacency, coherence, depth]
-        let used = components.filter(\.used)
-        let totalWeight = used.reduce(0) { $0 + $1.weight }
-        let score = used.reduce(0) { $0 + $1.value * $1.weight } / max(1e-9, totalWeight)
+        // Unavailable terms are dropped and the remaining weights renormalised. Each term keeps
+        // its EFFECTIVE weight so the breakdown reproduces the score exactly: Σ value × effectiveWeight.
+        let totalWeight = [extent, adjacency, coherence, depth].filter(\.used).reduce(0) { $0 + $1.weight }
+        let components = [extent, adjacency, coherence, depth].map { term -> ScoreComponent in
+            var t = term
+            t.effectiveWeight = term.used ? term.weight / max(1e-9, totalWeight) : 0
+            return t
+        }
+        let score = components.reduce(0) { $0 + $1.value * $1.effectiveWeight }
 
         // Quality: how well the segmentation supports this region, never a probability.
         var quality: EvidenceQuality
@@ -211,6 +231,10 @@ nonisolated enum EnvironmentElementRanker {
         else if region.areaFraction >= 0.04 && g.largestComponentShare >= 0.40 { quality = .moderate }
         else { quality = .low }
         var uncertainty: [String] = []
+        if setAsideNearby {
+            quality = quality.lowered()
+            uncertainty.append("Part of the frame was set aside as unreliable, so the surroundings are only partly known.")
+        }
         if unsupported > 0.25 {
             quality = quality.lowered()
             uncertainty.append("A large part of the image has unsupported labels.")
@@ -244,7 +268,7 @@ nonisolated enum EnvironmentElementRanker {
                               value: region.rawLabels.map { String(format: "%@ %.1f%%", $0.label, $0.areaFraction * 100) }.joined(separator: ", ")),
             EvidenceReference(source: nil, origin: .derivedMeasurement, role: .primary, label: "\(name) score terms",
                               value: components.map { c in
-                                  c.used ? String(format: "%@ %.2f x %.2f", c.name, c.value, c.weight) : "\(c.name) not used"
+                                  c.used ? String(format: "%@ %.2f × %.2f", c.name, c.value, c.effectiveWeight) : "\(c.name) not used"
                               }.joined(separator: "; ")),
         ]
 

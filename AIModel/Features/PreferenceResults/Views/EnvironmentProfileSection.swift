@@ -24,7 +24,7 @@ struct EnvironmentProfileSection: View {
         ResultCard {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Environment and composition", systemImage: "photo.on.rectangle.angled").font(.headline)
-                Text("Segmentation was valid for \(profile.eligiblePhotoCount) of \(profile.totalPhotoCount) photos.")
+                Text("Segmentation could be interpreted for \(profile.eligiblePhotoCount) of \(profile.totalPhotoCount) photos.")
                     .font(.subheadline)
                 Text("Composition tendencies can be used in any scene. Scene tendencies describe your reference photos and only apply when the same kind of environment is present.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -108,7 +108,7 @@ struct EnvironmentProfileSection: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Elements that appear").font(.subheadline.weight(.semibold))
                         ForEach(s.groupTendencies.prefix(6)) { tendencyRow($0) }
-                        Text("Rates use the \(profile.eligiblePhotoCount) photo(s) with valid segmentation. \"Dominant when present\" uses only the photos where the element appears.")
+                        Text("Each rate counts only the photos that can speak to that element (up to \(profile.eligiblePhotoCount)). \"Dominant when present\" uses only the photos where it appears. Photos where the model's reading was set aside or too incomplete are left out, never counted as absent.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

@@ -5,6 +5,9 @@ import CoreGraphics
 /// Pure rendering of existing outputs: no inference happens here.
 nonisolated enum OverlayRasterizer {
 
+    /// Opacity of a set-aside region when nothing is highlighted (normal regions use 0.50).
+    static let setAsideAlpha = 0.14
+
     /// Person pixels tinted; everything else transparent.
     static func personMask(_ grid: SegmentationGrid) -> UIImage? {
         guard let person = grid.personClassIndex, grid.width > 0, grid.height > 0 else { return nil }
@@ -22,7 +25,12 @@ nonisolated enum OverlayRasterizer {
     /// Every supported region tinted by its colour; people are left untinted so the
     /// subject stays visible. With `highlight`, only that region is emphasised.
     /// Draws the model's actual class map, cell for cell: nothing is smoothed or invented.
-    static func segmentation(_ grid: SegmentationGrid, highlight: String? = nil) -> UIImage? {
+    ///
+    /// `setAside` lists families whose label was judged implausible (see `RegionReliabilityAssessor`).
+    /// They are still drawn, because that is what the model said, but only faintly, so the image does
+    /// not present them with the same confidence as the regions that are used. A highlight on a
+    /// set-aside family shows it at the normal highlight strength.
+    static func segmentation(_ grid: SegmentationGrid, highlight: String? = nil, setAside: Set<String> = []) -> UIImage? {
         guard grid.width > 0, grid.height > 0, grid.classIndices.count == grid.width * grid.height else { return nil }
         let mapping = SegmentationTaxonomy.Mapping(labels: grid.labels)
         var colours: [(r: Double, g: Double, b: Double)?] = []
@@ -30,7 +38,11 @@ nonisolated enum OverlayRasterizer {
         for f in mapping.families {
             if f.group == .person { colours.append(nil); alphas.append(0); continue }
             colours.append(RegionPalette.rgb(for: f))
-            alphas.append(highlight == nil ? 0.50 : (highlight == f.key ? 0.72 : 0.08))
+            if highlight == nil {
+                alphas.append(setAside.contains(f.key) ? setAsideAlpha : 0.50)
+            } else {
+                alphas.append(highlight == f.key ? 0.72 : 0.08)
+            }
         }
         var pixels = [UInt8](repeating: 0, count: grid.width * grid.height * 4)
         for i in 0..<(grid.width * grid.height) {

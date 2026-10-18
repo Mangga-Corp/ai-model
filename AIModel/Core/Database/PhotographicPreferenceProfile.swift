@@ -91,6 +91,13 @@ struct PhotographicPreferenceProfile: Identifiable, Hashable {
     let mixedPatterns: [Inconsistency]
     let limitations: [String]
     let generatedAt: Date
+
+    /// Evidence-checked horizontal-position and scale preferences for the LIVE camera, adapted
+    /// from the analysed reference photos when this profile is built by `CameraProfileBridge`.
+    /// Nil for profiles built any other way (the legacy pipeline), in which case the camera
+    /// behaves exactly as it did before this field existed. It is a value on the profile, so it
+    /// is replaced together with it and can never outlive it.
+    var livePreferences: LiveCompositionPreferences? = nil
 }
 
 // MARK: - Distribution Types

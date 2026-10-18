@@ -60,7 +60,8 @@ nonisolated struct ElementTendency: Sendable, Equatable, Identifiable {
     let key: String
     let label: String
     let group: ElementGroup
-    /// Photos with a valid segmentation output: the denominator for every rate here.
+    /// Photos that can speak to THIS element: interpretable segmentation, minus photos where a
+    /// region of this kind was set aside as unreliable (unknown there, not absent).
     let eligiblePhotoCount: Int
     let presentCount: Int
     let dominantCount: Int
@@ -122,7 +123,8 @@ nonisolated struct SceneDependentTendencies: Sendable, Equatable {
 
 nonisolated struct EnvironmentProfile: Sendable, Equatable {
     let totalPhotoCount: Int
-    /// Photos whose segmentation output was valid: the denominator for element and scene tendencies.
+    /// Photos whose segmentation could be INTERPRETED (decoded, enough supported labels, enough
+    /// reliable surroundings): the denominator for element and scene tendencies.
     let eligiblePhotoCount: Int
     let transferable: TransferableComposition
     let sceneDependent: SceneDependentTendencies

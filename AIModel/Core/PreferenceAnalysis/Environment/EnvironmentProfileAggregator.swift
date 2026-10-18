@@ -25,7 +25,12 @@ nonisolated enum EnvironmentProfileAggregator {
     static func aggregate(_ results: [PhotoResult]) -> EnvironmentProfile {
         let ordered = results.sorted { $0.selectionOrder < $1.selectionOrder }
         let total = ordered.count
-        let eligible = ordered.filter { $0.environment?.segmentation.availability.hasValidOutput ?? false }
+        // Only photos whose segmentation can support claims about the surroundings count toward
+        // presence or absence. A photo whose output decoded but is too incomplete to interpret says
+        // nothing about what is, or is not, in the scene.
+        let eligible = ordered.filter { $0.environment?.segmentation.interpretation.isEligible ?? false }
+        let decoded = ordered.filter { $0.environment?.segmentation.availability.hasValidOutput ?? false }.count
+        let withSetAside = ordered.filter { !($0.environment?.segmentation.setAsideRegions.isEmpty ?? true) }.count
 
         // MARK: Transferable composition
 
@@ -83,7 +88,7 @@ nonisolated enum EnvironmentProfileAggregator {
             kind: nil, all: ordered, possible: 2,
             name: { (s: SceneSetting) -> String in s.displayName },
             observe: { (r: PhotoResult) -> (SceneSetting, EvidenceQuality)? in
-                guard let e = r.environment, e.segmentation.availability.hasValidOutput,
+                guard let e = r.environment, e.segmentation.interpretation.isEligible,
                       e.scene.setting != .undetermined else { return nil }
                 return (e.scene.setting, min(e.segmentation.assessment.quality, .moderate))
             })
@@ -92,7 +97,7 @@ nonisolated enum EnvironmentProfileAggregator {
             kind: nil, all: ordered, possible: 3,
             name: { (c: EnvironmentCharacter) -> String in c.displayName },
             observe: { (r: PhotoResult) -> (EnvironmentCharacter, EvidenceQuality)? in
-                guard let e = r.environment, e.segmentation.availability.hasValidOutput,
+                guard let e = r.environment, e.segmentation.interpretation.isEligible,
                       e.scene.character != .undetermined else { return nil }
                 return (e.scene.character, min(e.segmentation.assessment.quality, .moderate))
             })
@@ -113,7 +118,7 @@ nonisolated enum EnvironmentProfileAggregator {
         return EnvironmentProfile(
             totalPhotoCount: total, eligiblePhotoCount: eligible.count,
             transferable: transferable, sceneDependent: sceneDependent, coverage: coverage,
-            limitations: limitations(total: total, eligible: eligible.count))
+            limitations: limitations(total: total, eligible: eligible.count, decoded: decoded, withSetAside: withSetAside))
     }
 
     // MARK: Element tendencies
@@ -125,6 +130,8 @@ nonisolated enum EnvironmentProfileAggregator {
         var areas: [Double] = []
         var dominant: [UUID] = []
         var secondary: [UUID] = []
+        /// Photos where a region of this kind was set aside: neither present nor absent there.
+        var setAside: [UUID] = []
     }
 
     private static func familyTendencies(_ eligible: [PhotoResult]) -> [ElementTendency] {
@@ -135,6 +142,11 @@ nonisolated enum EnvironmentProfileAggregator {
                 var a = acc[region.family.key] ?? Accumulator(label: region.family.displayName, group: region.family.group)
                 a.present.append(r.id)
                 a.areas.append(region.areaFraction)
+                acc[region.family.key] = a
+            }
+            for region in e.segmentation.setAsideRegions where region.family.group.isEnvironmental {
+                var a = acc[region.family.key] ?? Accumulator(label: region.family.displayName, group: region.family.group)
+                a.setAside.append(r.id)
                 acc[region.family.key] = a
             }
             for c in e.elements.candidates {
@@ -160,6 +172,11 @@ nonisolated enum EnvironmentProfileAggregator {
                 a.areas.append(area)
                 acc[group.rawValue] = a
             }
+            for group in Set(e.segmentation.setAsideRegions.filter { $0.family.group.isEnvironmental }.map(\.family.group)) {
+                var a = acc[group.rawValue] ?? Accumulator(label: group.displayName, group: group)
+                a.setAside.append(r.id)
+                acc[group.rawValue] = a
+            }
             // A group counts once per photo, at its strongest role.
             let dominantGroups = Set(e.elements.candidates.filter { $0.role == .dominant }.map(\.group))
             let secondaryGroups = Set(e.elements.candidates.filter { $0.role == .secondary }.map(\.group)).subtracting(dominantGroups)
@@ -170,13 +187,16 @@ nonisolated enum EnvironmentProfileAggregator {
     }
 
     private static func tendencies(from acc: [String: Accumulator], eligibleCount: Int) -> [ElementTendency] {
-        acc.map { key, a in
-            ElementTendency(
-                key: key, label: a.label, group: a.group, eligiblePhotoCount: eligibleCount,
+        // A set-aside region of this kind leaves the photo out of THIS element's denominator
+        // (it is unknown there, not absent). Elements never seen are not listed.
+        acc.filter { !$0.value.present.isEmpty }.map { key, a in
+            let denominator = max(0, eligibleCount - a.setAside.count)
+            return ElementTendency(
+                key: key, label: a.label, group: a.group, eligiblePhotoCount: denominator,
                 presentCount: a.present.count, dominantCount: a.dominant.count, secondaryCount: a.secondary.count,
                 presentPhotoIDs: a.present, dominantPhotoIDs: a.dominant,
                 areaWhenPresent: NumericSummary.make(a.areas),
-                pattern: PresencePattern.classify(present: a.present.count, eligible: eligibleCount),
+                pattern: PresencePattern.classify(present: a.present.count, eligible: denominator),
                 condition: "Conditional on the live scene containing \(a.label.lowercased()).")
         }
         .sorted {
@@ -257,11 +277,17 @@ nonisolated enum EnvironmentProfileAggregator {
                              unavailablePhotoIDs: unavailable)
     }
 
-    private static func limitations(total: Int, eligible: Int) -> [String] {
+    private static func limitations(total: Int, eligible: Int, decoded: Int, withSetAside: Int) -> [String] {
         guard total > 0 else { return ["No photos were analysed."] }
         var out: [String] = []
         if eligible < total {
-            out.append("Segmentation was valid for \(eligible) of \(total) photos. The others are left out of element and scene tendencies, not counted as lacking those elements.")
+            out.append("Segmentation could be interpreted for \(eligible) of \(total) photos. The others are left out of element and scene tendencies, not counted as lacking those elements.")
+        }
+        if decoded > eligible {
+            out.append("\(decoded - eligible) photo(s) produced a segmentation that was too incomplete to interpret (little visible surroundings or few supported labels). They say nothing about what is or is not in the scene.")
+        }
+        if withSetAside > 0 {
+            out.append("\(withSetAside) photo(s) had a region set aside as unreliable. That element is left out of those photos' counts, neither present nor absent.")
         }
         if eligible == 1 {
             out.append("Only one photo has environment evidence, so element and scene findings are single observations, not preferences.")

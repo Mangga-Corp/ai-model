@@ -65,7 +65,11 @@ nonisolated enum CompositionMeasurer {
         }
 
         // Environmental elements.
-        let humanMask = (segmentation.human?.isValid ?? false) ? segmentation.human?.maskAreaFraction : nil
+        // A mask-to-mask comparison needs two COMPATIBLE masks: the person's mask must be valid and
+        // must not be contaminated by another person overlapping the box (the model merges people).
+        let human = segmentation.human
+        let maskUsable = (human?.isValid ?? false) && !(human?.mayIncludeOtherPeople ?? false)
+        let humanMask = maskUsable ? human?.maskAreaFraction : nil
         let measurements: [ElementMeasurement] = segmentation.environmentalRegions.prefix(maximumElements).compactMap { region in
             guard let g = region.geometry else { return nil }
             var relative: RelativeScale?
@@ -163,7 +167,9 @@ nonisolated enum CompositionMeasurer {
             }
         }
 
-        let architecture = segmentation.environmentalRegions.filter { $0.family.group == .architecture }
+        // Region-based descriptors are interpretations: withheld unless the segmentation is interpretable.
+        let interpretable = segmentation.interpretation.isEligible
+        let architecture = interpretable ? segmentation.environmentalRegions.filter { $0.family.group == .architecture } : []
         let architectureArea = architecture.reduce(0) { $0 + $1.areaFraction }
         if architectureArea >= architectureMajorMinimum {
             descriptors.append(CompositionDescriptor(
@@ -174,7 +180,7 @@ nonisolated enum CompositionMeasurer {
                                architectureArea * 100, architectureMajorMinimum * 100, architectureMajorFirm * 100)]))
         }
 
-        let vegetation = segmentation.environmentalRegions.filter { $0.family.group == .vegetation }
+        let vegetation = interpretable ? segmentation.environmentalRegions.filter { $0.family.group == .vegetation } : []
         let vegetationArea = vegetation.reduce(0) { $0 + $1.areaFraction }
         if vegetationArea >= edgeVegetationMinimumArea {
             let pixels = vegetation.reduce(0.0) { $0 + Double($1.pixelCount) }
@@ -198,7 +204,7 @@ nonisolated enum CompositionMeasurer {
             "Bands and descriptors are interpretations of the measurements using the stated thresholds; values near a threshold are marked borderline.",
         ]
         if subject?.maskMayIncludeOtherPeople == true {
-            limitations.append("Another person overlaps the subject's box, so the person mask may include them.")
+            limitations.append("Another person overlaps the subject's box, so the person mask may include them. Element sizes are compared with the person's box instead of the mask.")
         }
         if let human = segmentation.human, !human.isValid, subject != nil, let reason = human.invalidReason {
             limitations.append("No valid person mask (\(reason)); element sizes are compared with the person's box instead.")

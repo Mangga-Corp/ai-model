@@ -99,7 +99,7 @@ nonisolated extension ElementGroup {
 ///     unsupported labels or ambiguity each lower it.
 nonisolated enum SceneContextInterpreter {
 
-    static let minimumEnvironmentFraction = 0.15
+    static let minimumEnvironmentFraction = ObjectSegmentationResult.minimumInterpretableSurroundings
     static let primaryThreshold = 0.50
     static let secondaryThreshold = 0.30
     static let ambiguityGap = 0.10
@@ -143,6 +143,7 @@ nonisolated enum SceneContextInterpreter {
 
         // Only the surroundings count: not the person, not what they carry or wear.
         let regions = segmentation.environmentalRegions
+        let setAside = segmentation.setAsideRegions.filter { $0.family.group.isEnvironmental }
         let env = segmentation.environmentFraction
 
         var groupArea: [ElementGroup: Double] = [:]
@@ -164,9 +165,12 @@ nonisolated enum SceneContextInterpreter {
             .map { SceneCue(group: $0, label: $0.displayName, areaFraction: g($0), environmentShare: share(g($0))) }
             .sorted { $0.areaFraction != $1.areaFraction ? $0.areaFraction > $1.areaFraction : $0.label < $1.label }
 
-        guard env >= minimumEnvironmentFraction else {
+        // INTERPRETATION ELIGIBILITY. If too little of the frame is interpretable surroundings (or
+        // too little of the image carries supported labels), the cues are shown as observations but
+        // no place is named.
+        if case .limited(let why) = segmentation.interpretation {
             return empty(.insufficient(
-                "Only \(pct(env)) of the frame shows the surroundings, which is too little to say what kind of place this is.",
+                "The scene is not assessed because \(why).",
                 limitations: [method]), cues: cues)
         }
 
@@ -282,10 +286,7 @@ nonisolated enum SceneContextInterpreter {
 
         // Natural environment.
         let naturalGroups = [ElementGroup.vegetation, .water, .landform, .naturalGround].filter { g($0) >= 0.05 }.count
-        // Bare "rock" is ambiguous: the model also calls stone walls and cliffs rock. Without
-        // sky, a mountain, or any vegetation, water or open ground beside it, do not call it natural.
-        let rockOnly = landform >= 0.9 * naturalArea && a(["mountain"]) < 0.03 && sky < 0.05
-        if setting == .outdoor, !rockOnly, naturalArea >= 0.20, share(naturalArea) >= 0.50, builtEnv <= 0.25 {
+        if setting == .outdoor, naturalArea >= 0.20, share(naturalArea) >= 0.50, builtEnv <= 0.25 {
             finish(.naturalEnvironment, 0.55 + (naturalGroups >= 2 ? 0.10 : 0),
                    ["natural elements fill \(pct(share(naturalArea))) of the surroundings, built structures only \(pct(builtEnv))"])
         }
@@ -403,12 +404,17 @@ nonisolated enum SceneContextInterpreter {
             else { quality = .low }
             if env < 0.30 { quality = quality.lowered() }
             if segmentation.unsupportedFraction > 0.25 { quality = quality.lowered() }
+            if !setAside.isEmpty { quality = quality.lowered() }
         }
 
         var limitations = [method,
                            "The image classifier (FastViT, ImageNet labels) names objects, not places. It can only corroborate a category the segmentation already supports."]
         if env < 0.30 { limitations.append("Only \(pct(env)) of the frame shows the surroundings, so cues are sparse.") }
         if segmentation.unsupportedFraction > 0.25 { limitations.append("Many pixels have labels outside the supported set.") }
+        if !setAside.isEmpty {
+            limitations.append("Set aside as unreliable and not used: " + setAside.map(\.family.displayName).joined(separator: ", ")
+                               + ". Their area is unknown, not an empty background.")
+        }
         if classifier.value == nil, let problem = classifier.problem {
             limitations.append("The image classifier did not run (\(problem)); no corroboration was available.")
         }

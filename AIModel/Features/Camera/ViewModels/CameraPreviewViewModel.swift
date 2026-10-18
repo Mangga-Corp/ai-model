@@ -421,6 +421,9 @@ final class CameraPreviewViewModel: ObservableObject {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let frameSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
                                height: CVPixelBufferGetHeight(pixelBuffer))
+        // When this frame arrived, so a measurement that takes too long to come back is not
+        // treated as current by the preference-aware checks.
+        let capturedAt = ProcessInfo.processInfo.systemUptime
 
         offerSceneUnderstanding(pixelBuffer)
 
@@ -430,14 +433,14 @@ final class CameraPreviewViewModel: ObservableObject {
                 updateFocus(subjectBox: nil)
                 // Still evaluate so a lost subject is reported, not silently
                 // treated as "nothing to guide on".
-                evaluateComposition(personBox: nil)
+                evaluateComposition(personBox: nil, frameSize: frameSize, capturedAt: capturedAt)
                 return
             }
 
             let overlayRect = Self.toViewSpace(visionRect, frameSize: frameSize)
             subjectBox = overlayRect
             updateFocus(subjectBox: overlayRect)
-            evaluateComposition(personBox: overlayRect)
+            evaluateComposition(personBox: overlayRect, frameSize: frameSize, capturedAt: capturedAt)
         }
     }
 
@@ -473,7 +476,22 @@ final class CameraPreviewViewModel: ObservableObject {
     /// Fed from the same detection pass that publishes `subjectBox`, so guidance
     /// and the live box can never disagree. No-ops when there is no profile —
     /// with nothing to compare against, guidance would be inventing a preference.
-    private func evaluateComposition(personBox: CGRect?) {
+    ///
+    /// When the profile carries adapted preferences, subject scale and horizontal position are
+    /// judged by the preference-aware check; everything else, and every profile without them,
+    /// goes through the evaluator exactly as before. Internal (not private) so the whole
+    /// profile-to-instruction path can be unit-tested without a camera.
+    ///
+    /// - Parameters:
+    ///   - frameSize: pixel size of the buffer `personBox` was measured in.
+    ///   - capturedAt: `systemUptime` when that buffer arrived.
+    ///   - now: `systemUptime` of this evaluation.
+    ///   - isMirrored: nil reads the capture connection (the back camera is never mirrored).
+    func evaluateComposition(personBox: CGRect?,
+                             frameSize: CGSize,
+                             capturedAt: TimeInterval,
+                             now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                             isMirrored: Bool? = nil) {
         guard let profile else {
             compositionInstruction = nil
             isCompositionReady = false
@@ -486,11 +504,22 @@ final class CameraPreviewViewModel: ObservableObject {
             personLost: false
         )
 
+        let personalization = profile.livePreferences.map { preferences in
+            LivePersonalization(
+                preferences: preferences,
+                frameSize: frameSize,
+                isMirrored: isMirrored ?? videoOutput.connection(with: .video)?.isVideoMirrored ?? false,
+                capturedAt: capturedAt,
+                now: now
+            )
+        }
+
         let evaluation = evaluator.evaluate(
             measurement: measurement,
             position: profile.subjectPositionDistribution,
             size: profile.subjectSizeDistribution,
-            photoCount: profile.photoCount
+            photoCount: profile.photoCount,
+            personalization: personalization
         )
 
         // The guidance engine must see every evaluation to keep its stability

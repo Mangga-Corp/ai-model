@@ -30,6 +30,8 @@ private struct CardHeader: View {
     let title: String
     let systemImage: String
     let assessment: Assessment
+    /// Replaces the evidence-grade badge when the grade would overstate what is known.
+    var neutralBadge: (label: String, symbol: String)? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -37,7 +39,8 @@ private struct CardHeader: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
-            EvidenceBadge(assessment)
+            if let neutralBadge { NeutralBadge(label: neutralBadge.label, symbol: neutralBadge.symbol) }
+            else { EvidenceBadge(assessment) }
         }
     }
 }
@@ -47,6 +50,9 @@ private struct CardFooter: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Text("Evidence grades are rule-based checks of coverage and agreement. They are not model probabilities, and none says the model's labels are correct.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
             if !assessment.limitations.isEmpty {
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 6) {
@@ -69,6 +75,22 @@ private struct CardFooter: View {
                 }
             }
         }
+    }
+}
+
+/// A badge that states what happened without grading it. Segmentation has no
+/// confidence to report, so it never shows a "strong evidence" style label.
+private struct NeutralBadge: View {
+    let label: String
+    let symbol: String
+
+    var body: some View {
+        Label(label, systemImage: symbol)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color.blue)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.blue.opacity(0.12), in: Capsule())
+            .accessibilityElement(children: .combine)
     }
 }
 
@@ -123,7 +145,8 @@ private struct SegmentationCard: View {
         let seg = env.segmentation
         ResultCard {
             VStack(alignment: .leading, spacing: 10) {
-                CardHeader(title: "Object Segmentation", systemImage: "square.on.square.dashed", assessment: seg.assessment)
+                CardHeader(title: "Object Segmentation", systemImage: "square.on.square.dashed", assessment: seg.assessment,
+                           neutralBadge: seg.availability.hasValidOutput ? ("Output decoded", "checkmark.circle") : nil)
 
                 Text(headline(seg)).font(.title2.bold()).accessibilityAddTraits(.isHeader)
                 Text(seg.assessment.explanation)
@@ -145,7 +168,9 @@ private struct SegmentationCard: View {
 
                 if seg.availability.hasValidOutput { peopleSummary(seg) }
 
-                Text(ObjectSegmentationResult.semanticNote).font(.caption).foregroundStyle(.tertiary)
+                Text(ObjectSegmentationResult.semanticNote + " The labels come from the model and are not independently verified.")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
                 CardFooter(assessment: seg.assessment)
             }
         }
@@ -157,7 +182,8 @@ private struct SegmentationCard: View {
         case .available:
             let n = seg.environmentalRegions.count
             return "\(n) environmental region\(n == 1 ? "" : "s")"
-        case .noEnvironmentalRegions: return "No environmental regions"
+        case .noEnvironmentalRegions:
+            return seg.setAsideRegions.isEmpty ? "No environmental regions" : "No usable regions"
         case .unavailable: return "Unavailable"
         case .invalid: return "Output not usable"
         }
@@ -172,7 +198,8 @@ private struct SegmentationCard: View {
             .pickerStyle(.segmented)
             EvidenceImageView(image: image, photo: photo, artifacts: artifacts,
                               layers: mode == .segmentation ? [.segmentation] : [],
-                              highlightedRegionID: mode == .segmentation ? selected : nil)
+                              highlightedRegionID: mode == .segmentation ? selected : nil,
+                              setAsideRegionIDs: Set(seg.setAsideRegions.map(\.id)))
         } else {
             Label("The original photo is not available, so the overlay cannot be shown.", systemImage: "photo.badge.exclamationmark")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -204,6 +231,7 @@ private struct SegmentationCard: View {
     private func row(_ r: SemanticRegion) -> some View {
         let isSelected = selected == r.id
         let carried = r.family.group == .carriedItem
+        let aside = r.reliability.reason
         return Button {
             selected = isSelected ? nil : r.id
             mode = .segmentation
@@ -214,11 +242,17 @@ private struct SegmentationCard: View {
                     HStack(spacing: 6) {
                         Text(r.family.displayName).font(.subheadline.weight(isSelected ? .bold : .medium))
                         if carried { SmallTag(text: "Carried or worn", color: .gray) }
+                        if aside != nil { SmallTag(text: "Set aside", color: .orange) }
                         Spacer(minLength: 8)
                         Text(pct(r.areaFraction, 1)).font(.subheadline.monospacedDigit())
                     }
                     Text(detail(r)).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let aside {
+                        Text("Not used for rankings, scene or preferences. " + aside)
+                            .font(.caption).foregroundStyle(.orange).multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .padding(.vertical, 2)
@@ -312,7 +346,7 @@ private struct DominantElementsCard: View {
                 Text(c.label).font(.subheadline.weight(.semibold))
                 SmallTag(text: c.role.label, color: c.role.color)
                 Spacer(minLength: 8)
-                Text(String(format: "%.2f", c.score)).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                Text(String(format: "score %.2f", c.score)).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -322,7 +356,8 @@ private struct DominantElementsCard: View {
             }
             .frame(height: 6)
             .accessibilityHidden(true)
-            Text("\(pct(c.areaFraction)) of the image · \(EnvironmentFormat.zone(c.horizontal, c.vertical)) · \(c.quality.label.lowercased())")
+            Text("\(pct(c.areaFraction)) of the image · \(EnvironmentFormat.zone(c.horizontal, c.vertical)) · \(c.quality.label.lowercased())"
+                 + (c.pieceCount > 1 ? " · \(c.pieceCount) pieces, one combined region" : ""))
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             DisclosureGroup {
@@ -333,11 +368,14 @@ private struct DominantElementsCard: View {
                         HStack(alignment: .firstTextBaseline) {
                             Text(term.name).font(.caption.weight(.medium))
                             Spacer(minLength: 8)
-                            Text(term.used ? String(format: "%.2f × %.0f%%", term.value, term.weight * 100) : "not used")
+                            Text(term.used ? String(format: "%.2f × %.0f%%", term.value, term.effectiveWeight * 100) : "not used")
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
                         Text(term.note).font(.caption2).foregroundStyle(.tertiary)
                     }
+                    Text(String(format: "Score %.2f = the sum of each value × its share of the weight. Shares are renormalised over the terms that were available.", c.score))
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                     ForEach(c.uncertainty, id: \.self) { note in
                         Label(note, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.secondary)
                             .labelStyle(TopAlignedLabelStyle())
@@ -488,7 +526,9 @@ private struct CompositionCard: View {
         VStack(spacing: 6) {
             Divider()
             ValueRow(label: "Subject box area", value: pct(s.boxAreaRatio, 1))
-            if let mask = s.maskAreaRatio { ValueRow(label: "Subject mask area", value: pct(mask, 1)) }
+            if let mask = s.maskAreaRatio {
+                ValueRow(label: "Subject mask area", value: pct(mask, 1) + (s.maskMayIncludeOtherPeople ? " (may include another person)" : ""))
+            }
             ValueRow(label: "Width × height", value: "\(pct(s.widthRatio)) × \(pct(s.heightRatio))")
             ValueRow(label: "Center", value: EnvironmentFormat.point(s.center))
             ValueRow(label: "Zone", value: EnvironmentFormat.zone(s.horizontal, s.vertical))

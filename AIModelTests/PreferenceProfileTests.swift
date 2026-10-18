@@ -212,4 +212,20 @@ final class PreferenceProfileTests: XCTestCase {
         XCTAssertEqual(camera.subjectPositionDistribution?.isConsistent, false)
         XCTAssertEqual(camera.subjectSizeDistribution?.isConsistent, false)
     }
+
+    // MARK: - Limitation wording
+
+    /// The profile once said camera angle "needs a measurable horizon". That stopped being true when
+    /// vertical structure became a second decisive source (see CameraAngleTests), so the wording must
+    /// describe the current rule and only appear when some photo's angle was left unknown.
+    func testCameraAngleLimitationDescribesTheCurrentEvidenceRules() {
+        let some = ProfileAggregator.aggregate([photo(0, angle: .eyeLevel), photo(1)]).limitations
+        let line = some.first { $0.hasPrefix("Camera angle is reported only when") }
+        XCTAssertNotNil(line, "shown when a photo's angle was left unknown")
+        XCTAssertTrue(line?.contains("horizon or enough vertical structure") ?? false)
+        XCTAssertFalse(some.contains { $0.contains("needs a measurable horizon") }, "the stale wording is gone")
+
+        let all = ProfileAggregator.aggregate([photo(0, angle: .eyeLevel), photo(1, angle: .lowAngle)]).limitations
+        XCTAssertFalse(all.contains { $0.contains("Camera angle is reported only when") }, "not shown when every photo has an angle")
+    }
 }

@@ -57,8 +57,8 @@ final class EnvironmentAnalysisTests: XCTestCase {
     }
 
     private func interpret(_ canvas: Canvas?, humans: [HumanCandidate] = [], classifier: [ScoredLabel]? = nil,
-                           depth: DepthGrid? = nil) -> EnvironmentAnalysisResult {
-        let ev = evidence(humans: humans, classifier: classifier, depthContrast: depth == nil ? nil : 0.3)
+                           depth: DepthGrid? = nil, depthContrast: Double = 0.3) -> EnvironmentAnalysisResult {
+        let ev = evidence(humans: humans, classifier: classifier, depthContrast: depth == nil ? nil : depthContrast)
         let selection = SubjectSelector.select(from: humans)
         let positioning = SubjectPositioningMeasurer.measure(selection: selection, evidence: ev)
         return EnvironmentInterpreter.interpret(
@@ -716,5 +716,414 @@ final class EnvironmentAnalysisTests: XCTestCase {
         XCTAssertEqual(env.elements.assessment.status, .unavailable)
         XCTAssertEqual(env.scene.assessment.status, .unavailable)
         XCTAssertEqual(env.composition.assessment.status, .unavailable)
+    }
+
+    // MARK: - Hardening: semantic reliability is separate from structural validity
+
+    private func reasonText(_ r: SemanticRegion?) -> String { r?.reliability.reason ?? "" }
+
+    func testAnObjectClassCoveringHalfTheFrameIsSetAsideButStillListed() throws {
+        var c = Canvas(fill: "wall (other)")
+        c.paint("cow", x: 0..<100, y: 30..<82)                   // 52% "cow": a mislabelled surface, in effect
+        let result = interpret(c)
+        let cow = try XCTUnwrap(result.segmentation.regions.first { $0.family.key == "cow" })
+        XCTAssertTrue(cow.isValid, "structurally the mask is fine and is still measured")
+        XCTAssertFalse(cow.reliability.isEligible, "but its label is not trusted")
+        XCTAssertTrue(reasonText(cow).contains("52%"))
+        XCTAssertTrue(result.segmentation.setAsideRegions.contains { $0.family.key == "cow" })
+        XCTAssertFalse(result.segmentation.environmentalRegions.contains { $0.family.key == "cow" })
+        XCTAssertFalse(result.elements.candidates.contains { $0.familyKey == "cow" }, "never ranked")
+        XCTAssertFalse(result.composition.elements.contains { $0.familyKey == "cow" }, "never measured as an element")
+        XCTAssertEqual(result.segmentation.environmentFraction, 0.48, accuracy: 1e-9,
+                       "its area is neither scenery nor empty: it is removed from the interpretable surroundings")
+    }
+
+    func testTheHalfFrameCutOffIsInclusiveAndOnlyForObjectClasses() throws {
+        func cowRegion(rows: Int) throws -> SemanticRegion {
+            var c = Canvas(fill: "wall (other)")
+            c.paint("cow", x: 0..<100, y: 0..<rows)
+            return try XCTUnwrap(interpret(c).segmentation.regions.first { $0.family.key == "cow" })
+        }
+        XCTAssertTrue(try cowRegion(rows: 49).reliability.isEligible, "49% is below the cut-off")
+        XCTAssertFalse(try cowRegion(rows: 50).reliability.isEligible, "50% is set aside")
+
+        let wall = Canvas(fill: "wall (other)")                   // a surface may legitimately fill the frame
+        XCTAssertTrue(try XCTUnwrap(interpret(wall).segmentation.regions.first { $0.family.key == "wall" }).reliability.isEligible)
+    }
+
+    func testARegionSetAsideIsUnknownNotAnEmptyBackground() {
+        var c = Canvas(fill: "person")                           // a close-up: person and a "cow" scarf
+        c.paint("cow", x: 0..<100, y: 48..<100)
+        let result = interpret(c, humans: [human(CGRect(x: 0, y: 0, width: 1, height: 0.5))])
+        XCTAssertEqual(result.segmentation.availability, .noEnvironmentalRegions)
+        XCTAssertEqual(result.segmentation.assessment.status, .determined, "the output decoded")
+        XCTAssertTrue(result.segmentation.assessment.explanation.contains("set aside"))
+        XCTAssertEqual(result.elements.outcome, .noEnvironmentalRegions)
+        XCTAssertTrue(result.elements.assessment.explanation.contains("Cow"), "the ranking says why nothing is ranked")
+        XCTAssertEqual(result.scene.primary, .unknown)
+        XCTAssertEqual(result.scene.assessment.status, .insufficientEvidence)
+        XCTAssertFalse(result.segmentation.interpretation.isEligible)
+    }
+
+    func testUncorroboratedRockIsSetAsideButRockWithSkyOrMountainsIsKept() throws {
+        func rock(_ build: (inout Canvas) -> Void) throws -> SemanticRegion {
+            var c = Canvas(fill: "rock")
+            build(&c)
+            return try XCTUnwrap(interpret(c).segmentation.regions.first { $0.family.key == "landform" })
+        }
+        XCTAssertFalse(try rock { _ in }.reliability.isEligible, "bare rock may be a stone wall")
+        XCTAssertFalse(try rock { $0.paint("tree", x: 0..<20, y: 0..<20) }.reliability.isEligible,
+                       "4% of vegetation does not make 90%+ rock scenery")
+        XCTAssertTrue(try rock { $0.paint("sky (other)", x: 0..<100, y: 0..<20) }.reliability.isEligible, "sky corroborates")
+        XCTAssertTrue(try rock { $0.paint("mountain", x: 0..<30, y: 0..<30) }.reliability.isEligible, "a mountain class corroborates")
+        XCTAssertTrue(try rock { $0.paint("tree", x: 0..<100, y: 0..<60) }.reliability.isEligible, "rock is only part of the nature here")
+    }
+
+    func testASmallRockInAnotherSceneIsLeftAlone() throws {
+        var c = Canvas(fill: "wall (other)")
+        c.paint("rock", x: 0..<20, y: 0..<20)                    // 4%
+        XCTAssertTrue(try XCTUnwrap(interpret(c).segmentation.regions.first { $0.family.key == "landform" }).reliability.isEligible)
+    }
+
+    func testAStoneWallLabelledRockIsNeitherRankedNorCalledNature() {
+        let result = interpret(Canvas(fill: "rock"))
+        XCTAssertFalse(result.elements.candidates.contains { $0.group == .landform })
+        XCTAssertNotEqual(result.scene.primary, .naturalEnvironment)
+        XCTAssertEqual(result.scene.primary, .unknown)
+    }
+
+    func testUnsupportedAndOutOfTableLabelsNeverBecomeRegions() throws {
+        // 3000 cells use a class index beyond the label table; 2000 use the "--" placeholder.
+        var indices = [UInt8](repeating: UInt8(names.firstIndex(of: "wall (other)")!), count: 100 * 100)
+        for i in 0..<3000 { indices[i] = 200 }
+        for i in 3000..<5000 { indices[i] = 0 }
+        let grid = SegmentationGrid(width: 100, height: 100, classIndices: indices, labels: names)
+        let a = SegmentationRegionAnalyzer.analyze(grid, depth: nil, subject: nil)
+        XCTAssertEqual(a.unsupportedFraction, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(a.regions.map(\.family.key), ["wall"], "no region is invented for an unsupported class")
+        XCTAssertTrue(a.unsupportedLabels.contains { $0.label == "class 200" })
+        XCTAssertTrue(a.unsupportedLabels.contains { $0.label == "--" })
+    }
+
+    // MARK: - Hardening: interpretation eligibility
+
+    func testAMajorityOfUnsupportedPixelsWithholdsDominanceAndScene() throws {
+        var c = Canvas(fill: "--")                               // 60% placeholder, 40% wall
+        c.paint("wall (other)", x: 0..<100, y: 0..<40)
+        let result = interpret(c)
+        XCTAssertEqual(result.segmentation.availability, .available, "the map decoded")
+        XCTAssertFalse(result.segmentation.interpretation.isEligible)
+        XCTAssertTrue(result.segmentation.interpretation.reason?.contains("labels this analysis supports") ?? false)
+        XCTAssertEqual(result.elements.outcome, .noStandoutElement)
+        XCTAssertTrue(result.elements.dominant.isEmpty)
+        XCTAssertTrue(result.elements.candidates.allSatisfy { $0.role == .uncertain }, "listed for reference, no role")
+        XCTAssertEqual(result.scene.primary, .unknown)
+        XCTAssertEqual(result.scene.assessment.status, .insufficientEvidence)
+        XCTAssertFalse(result.scene.observedCues.isEmpty, "what was observed is still shown")
+    }
+
+    func testLittleVisibleSurroundingsWithholdsDominanceAndRegionDescriptors() {
+        var c = Canvas(fill: "person")                           // a 2-cell tree frame around a full-frame person
+        c.paint("tree", x: 0..<100, y: 0..<2); c.paint("tree", x: 0..<100, y: 98..<100)
+        c.paint("tree", x: 0..<2, y: 0..<100); c.paint("tree", x: 98..<100, y: 0..<100)
+        let result = interpret(c, humans: [human(CGRect(x: 0.02, y: 0.02, width: 0.96, height: 0.96))])
+        XCTAssertLessThan(result.segmentation.environmentFraction, ObjectSegmentationResult.minimumInterpretableSurroundings)
+        XCTAssertTrue(result.elements.dominant.isEmpty)
+        XCTAssertEqual(result.elements.assessment.status, .insufficientEvidence)
+        XCTAssertTrue(result.elements.assessment.explanation.contains("frame shows"))
+        XCTAssertFalse(result.composition.descriptors.contains { $0.kind == .vegetationNearEdges },
+                       "an interpretation about the surroundings is withheld when they are barely visible")
+        XCTAssertNotNil(result.composition.subject, "the person is still measured")
+    }
+
+    func testEligibilityStatesAreReportedWithReasons() {
+        var c = Canvas(fill: "wall (other)")
+        XCTAssertTrue(interpret(c).segmentation.interpretation.isEligible)
+        c.paint("person", x: 0..<100, y: 0..<95)
+        XCTAssertFalse(interpret(c).segmentation.interpretation.isEligible)
+        XCTAssertNotNil(interpret(c).segmentation.interpretation.reason)
+        XCTAssertFalse(interpret(nil).segmentation.interpretation.isEligible)
+    }
+
+    // MARK: - Hardening: the score breakdown explains the actual calculation
+
+    func testBreakdownReproducesTheScoreWhenEveryTermIsAvailable() throws {
+        var c = Canvas(fill: "sky (other)")
+        c.paint("building (other)", x: 0..<100, y: 20..<100)
+        paintPerson(&c)
+        let depth = DepthGrid(width: 100, height: 100, nearness: (0..<10_000).map { Float($0 % 100) / 100 })
+        let candidate = try XCTUnwrap(interpret(c, humans: [human(personBox)], depth: depth).elements.candidates.first { $0.familyKey == "architecture" })
+        XCTAssertTrue(candidate.components.allSatisfy(\.used), "all four terms were available")
+        XCTAssertEqual(candidate.components.map(\.effectiveWeight).reduce(0, +), 1.0, accuracy: 1e-9)
+        XCTAssertEqual(candidate.components.map { $0.value * $0.effectiveWeight }.reduce(0, +), candidate.score, accuracy: 1e-9)
+        XCTAssertEqual(candidate.components.map(\.weight), [0.40, 0.25, 0.20, 0.15])
+        XCTAssertEqual(candidate.components.map(\.effectiveWeight), candidate.components.map(\.weight),
+                       "with nothing missing, effective equals nominal")
+    }
+
+    func testBreakdownIsRenormalisedExactlyWhenTermsAreMissing() throws {
+        let r = region("building", area: 0.30, largest: 0.5)
+        let result = EnvironmentElementRanker.rank(segmentation([r]),
+                                                   context: .init(subjectPresent: false, subjectAmbiguous: false, depthTrusted: false))
+        let c = try XCTUnwrap(result.candidates.first)
+        let byName = Dictionary(uniqueKeysWithValues: c.components.map { ($0.name, $0) })
+        XCTAssertEqual(try XCTUnwrap(byName["Extent"]).effectiveWeight, 0.40 / 0.60, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(byName["Coherence"]).effectiveWeight, 0.20 / 0.60, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(byName["Adjacency to the person"]).effectiveWeight, 0)
+        XCTAssertEqual(try XCTUnwrap(byName["Relative depth"]).effectiveWeight, 0)
+        XCTAssertEqual(c.score, (1.0 * 0.40 + 0.5 * 0.20) / 0.60, accuracy: 1e-9, "(extent 1.0 × .40 + coherence .5 × .20) ÷ .60")
+        XCTAssertEqual(c.components.map { $0.value * $0.effectiveWeight }.reduce(0, +), c.score, accuracy: 1e-9)
+    }
+
+    func testRelativeDepthIsUsedOnlyWhenTheDepthMapHasContrast() throws {
+        var c = Canvas(fill: "sky (other)")
+        c.paint("building (other)", x: 0..<100, y: 20..<100)
+        paintPerson(&c)
+        let depth = DepthGrid(width: 100, height: 100, nearness: (0..<10_000).map { Float($0 % 100) / 100 })
+
+        func depthTerm(_ contrast: Double) throws -> ScoreComponent {
+            let r = interpret(c, humans: [human(personBox)], depth: depth, depthContrast: contrast)
+            let cand = try XCTUnwrap(r.elements.candidates.first { $0.familyKey == "architecture" })
+            return try XCTUnwrap(cand.components.first { $0.name == "Relative depth" })
+        }
+        XCTAssertTrue(try depthTerm(0.30).used)
+        let flat = try depthTerm(0.03)                            // below the 0.04 contrast requirement
+        XCTAssertFalse(flat.used)
+        XCTAssertEqual(flat.effectiveWeight, 0)
+        let r = interpret(c, humans: [human(personBox)], depth: depth, depthContrast: 0.03)
+        XCTAssertNil(r.segmentation.regions.first { $0.family.key == "architecture" }?.depth, "no depth is attached to regions either")
+    }
+
+    func testCombinedObjectRegionsReportTheirPieces() throws {
+        var c = Canvas(fill: "wall (other)")
+        c.paint("chair", x: 5..<25, y: 60..<75)                  // two separate chairs, one combined region
+        c.paint("chair", x: 70..<90, y: 60..<75)
+        let candidate = try XCTUnwrap(interpret(c).elements.candidates.first { $0.familyKey == "chair" })
+        XCTAssertEqual(candidate.pieceCount, 2)
+    }
+
+    // MARK: - Hardening: position, scale and mask compatibility
+
+    func testAContaminatedPersonMaskIsNotComparedMaskToMask() throws {
+        var c = Canvas(fill: "building (other)")
+        c.paint("person", x: 30..<60, y: 40..<90)
+        let primary = human(CGRect(x: 0.30, y: 0.40, width: 0.30, height: 0.50), id: 0)
+        let other = human(CGRect(x: 0.50, y: 0.45, width: 0.25, height: 0.40), confidence: 0.8, id: 1)
+        let composition = interpret(c, humans: [primary, other]).composition
+        let subject = try XCTUnwrap(composition.subject)
+        XCTAssertTrue(subject.maskMayIncludeOtherPeople, "another person overlaps the box")
+        XCTAssertNotNil(subject.maskAreaRatio, "the mask area is still reported, as a flagged measurement")
+        let building = try XCTUnwrap(composition.elements.first { $0.familyKey == "architecture" })
+        XCTAssertEqual(try XCTUnwrap(building.relativeToSubject).basis, .boxToBox,
+                       "masks are compared only when both are valid and compatible")
+        XCTAssertTrue(composition.assessment.limitations.contains { $0.contains("person's box instead of the mask") })
+    }
+
+    func testBorderlineFlagsFollowTheStatedThresholds() {
+        func scale(_ v: Double) -> Banded<SubjectScaleBand> {
+            CompositionMeasurer.band(v, low: CompositionMeasurer.smallScaleCut, high: CompositionMeasurer.largeScaleCut,
+                                     labels: (SubjectScaleBand.small, .moderate, .large), margin: { $0 * CompositionMeasurer.scaleMargin })
+        }
+        // cut 0.10, margin 15% of the cut = 0.015; cut 0.35, margin 0.0525.
+        XCTAssertTrue(scale(0.1149).isNearBoundary);  XCTAssertFalse(scale(0.1151).isNearBoundary)
+        XCTAssertTrue(scale(0.0851).isNearBoundary);  XCTAssertFalse(scale(0.0849).isNearBoundary)
+        XCTAssertTrue(scale(0.4024).isNearBoundary);  XCTAssertFalse(scale(0.4026).isNearBoundary)
+        XCTAssertEqual(scale(0.0999).band, .small);   XCTAssertEqual(scale(0.10).band, .moderate)
+        XCTAssertEqual(scale(0.3499).band, .moderate); XCTAssertEqual(scale(0.35).band, .large)
+
+        func offset(_ v: Double) -> Banded<HorizontalOffsetBand> {
+            CompositionMeasurer.band(v, low: CompositionMeasurer.centeredCut, high: CompositionMeasurer.offCenterCut,
+                                     labels: (HorizontalOffsetBand.centered, .slightlyOff, .offCenter), margin: { _ in CompositionMeasurer.offsetMargin })
+        }
+        XCTAssertTrue(offset(0.0799).isNearBoundary); XCTAssertFalse(offset(0.0801).isNearBoundary)
+        XCTAssertTrue(offset(0.1201).isNearBoundary); XCTAssertFalse(offset(0.1199).isNearBoundary)
+        XCTAssertFalse(offset(0.10).isNearBoundary, "mid-band is firm")
+
+        func prominence(_ v: Double) -> Banded<ProminenceBand> {
+            CompositionMeasurer.band(v, low: CompositionMeasurer.subjectDominatesCut, high: CompositionMeasurer.environmentDominatesCut,
+                                     labels: (ProminenceBand.subjectDominates, .balanced, .environmentDominates),
+                                     margin: { $0 * CompositionMeasurer.prominenceMargin })
+        }
+        XCTAssertTrue(prominence(0.8049).isNearBoundary);  XCTAssertFalse(prominence(0.8051).isNearBoundary)
+        XCTAssertTrue(prominence(2.299).isNearBoundary);   XCTAssertFalse(prominence(2.301).isNearBoundary)
+    }
+
+    // MARK: - Hardening: scene rules
+
+    func testSkyWithACeilingAndFurnitureLeavesTheSettingUndetermined() {
+        var c = Canvas(fill: "wall (other)")
+        c.paint("sky (other)", x: 0..<100, y: 0..<25)             // outdoor 3
+        c.paint("tree", x: 0..<100, y: 25..<50)                   // outdoor 3
+        c.paint("ceiling", x: 0..<30, y: 50..<60)                 // indoor 3
+        c.paint("chair", x: 0..<50, y: 60..<70)                   // indoor 3
+        let scene = interpret(c).scene
+        XCTAssertEqual(scene.setting, .undetermined)
+        XCTAssertTrue(scene.settingReasons.joined().contains("both indoor and outdoor"))
+        XCTAssertNotEqual(scene.primary, .indoorInterior)
+        XCTAssertNotEqual(scene.primary, .parkOrGarden)
+        XCTAssertNotEqual(scene.primary, .naturalEnvironment)
+    }
+
+    func testPavingWithoutBuildingsOrTrafficIsNotAStreet() {
+        var c = Canvas(fill: "sky (other)")
+        c.paint("pavement", x: 0..<100, y: 55..<100)
+        let scene = interpret(c).scene
+        XCTAssertEqual(scene.setting, .outdoor)
+        XCTAssertNotEqual(scene.primary, .urbanStreet)
+    }
+
+    func testAHeavilyCroppedPlainBackgroundStaysLowQuality() {
+        var c = Canvas(fill: "wall (other)")
+        c.paint("person", x: 0..<100, y: 0..<80)                  // 20% of the frame is background
+        let scene = interpret(c, humans: [human(CGRect(x: 0, y: 0, width: 1, height: 0.8))]).scene
+        XCTAssertLessThanOrEqual(scene.assessment.quality, .low)
+    }
+
+    func testClassifierDisagreementNeitherOverridesNorLowersTheSegmentationReading() {
+        let plain = interpret(beachScene(), humans: [human(personBox)]).scene
+        let disagree = interpret(beachScene(), humans: [human(personBox)], classifier: [
+            ScoredLabel(label: "restaurant, eating house, eating place, eatery", score: 0.6),
+            ScoredLabel(label: "library", score: 0.3),
+        ]).scene
+        XCTAssertEqual(disagree.primary, plain.primary, "an unsupported classifier label cannot override segmentation")
+        XCTAssertEqual(disagree.assessment.quality, plain.assessment.quality)
+        XCTAssertEqual(disagree.classifierHints.count, 2)
+        XCTAssertTrue(disagree.classifierHints.allSatisfy { !$0.used })
+    }
+
+    func testAMissingClassifierChangesNothingExceptANote() {
+        let seg = interpret(beachScene(), humans: [human(personBox)]).segmentation
+        let ran = SceneContextInterpreter.interpret(seg, classifier: .produced([]))
+        let failed = SceneContextInterpreter.interpret(seg, classifier: .failed("model missing"))
+        let skipped = SceneContextInterpreter.interpret(seg, classifier: .skipped("not run"))
+        for other in [failed, skipped] {
+            XCTAssertEqual(other.primary, ran.primary)
+            XCTAssertEqual(other.assessment.quality, ran.assessment.quality)
+            XCTAssertTrue(other.classifierHints.isEmpty)
+        }
+        XCTAssertTrue(failed.assessment.limitations.contains { $0.contains("model missing") })
+    }
+
+    func testInvalidSegmentationLeavesEverySegmentationDependentResultUnavailable() {
+        let result = interpret(Canvas(fill: "--"), humans: [human(personBox)])
+        XCTAssertEqual(result.elements.assessment.status, .unavailable)
+        XCTAssertEqual(result.scene.assessment.status, .unavailable)
+        XCTAssertNotNil(result.composition.subject, "Vision's person box is unaffected")
+    }
+
+    // MARK: - Hardening: aggregation
+
+    private func treesPhoto(_ order: Int) -> PhotoResult {
+        var c = Canvas(fill: "sky (other)")
+        c.paint("tree", x: 0..<100, y: 20..<100)
+        return photoResult(order: order, canvas: c)
+    }
+
+    /// The person fills the frame and only a sliver of wall is visible: decoded, but uninterpretable.
+    private func closeUpPhoto(_ order: Int) -> PhotoResult {
+        var c = Canvas(fill: "person")
+        c.paint("wall (other)", x: 0..<100, y: 95..<100)
+        return photoResult(order: order, canvas: c, humans: [human(CGRect(x: 0, y: 0, width: 1, height: 0.95))])
+    }
+
+    func testAnUninterpretablePhotoIsNeverCountedAsLackingAnElement() throws {
+        let results = [treesPhoto(0), treesPhoto(1), closeUpPhoto(2)]
+        XCTAssertEqual(results[2].environment?.segmentation.availability, .available, "it decoded fine")
+        let env = try aggregate(results)
+        let vegetation = try XCTUnwrap(env.sceneDependent.groupTendencies.first { $0.group == .vegetation })
+        XCTAssertEqual(vegetation.eligiblePhotoCount, 2, "the close-up says nothing about whether trees were there")
+        XCTAssertEqual(vegetation.presentCount, 2)
+        XCTAssertEqual(env.eligiblePhotoCount, 2)
+        XCTAssertTrue(env.limitations.contains { $0.contains("too incomplete to interpret") })
+    }
+
+    func testASetAsideElementIsUnknownNotAbsentInThatPhoto() throws {
+        func photo(_ order: Int, cowRows: Int) -> PhotoResult {
+            var c = Canvas(fill: "wall (other)")
+            c.paint("cow", x: 0..<100, y: 0..<cowRows)
+            return photoResult(order: order, canvas: c)
+        }
+        let results = [photo(0, cowRows: 60),                      // 60% cow: set aside
+                       photo(1, cowRows: 10),                      // 10% cow: eligible, present
+                       photo(2, cowRows: 0)]                       // no cow
+        let env = try aggregate(results)
+        XCTAssertEqual(env.eligiblePhotoCount, 3)
+        let cow = try XCTUnwrap(env.sceneDependent.familyTendencies.first { $0.key == "cow" })
+        XCTAssertEqual(cow.presentCount, 1)
+        XCTAssertEqual(cow.eligiblePhotoCount, 2, "the photo where a cow was set aside is neither present nor absent")
+        XCTAssertEqual(cow.pattern, .single, "one photo is an observation, not a habit")
+        XCTAssertTrue(env.limitations.contains { $0.contains("set aside") })
+        let animals = try XCTUnwrap(env.sceneDependent.groupTendencies.first { $0.group == .animal })
+        XCTAssertEqual(animals.eligiblePhotoCount, 2)
+    }
+
+    func testOnePhotoIsAnObservationAtEveryLevelOfTheProfile() throws {
+        let env = try aggregate([treesPhoto(0)])
+        XCTAssertEqual(env.sceneDependent.sceneCategory.pattern, .singleObservation)
+        XCTAssertNil(env.sceneDependent.sceneCategory.dominant)
+        XCTAssertEqual(env.transferable.environmentProminence.pattern, .noEvidence, "no subject, nothing to compare")
+        XCTAssertTrue(env.sceneDependent.groupTendencies.allSatisfy { $0.pattern == .single })
+    }
+
+    func testSceneDependentTendenciesAlwaysStateTheirCondition() throws {
+        let env = try aggregate([treesPhoto(0), treesPhoto(1)])
+        XCTAssertFalse(env.sceneDependent.groupTendencies.isEmpty)
+        XCTAssertTrue((env.sceneDependent.groupTendencies + env.sceneDependent.familyTendencies).allSatisfy { $0.condition.contains("Conditional") })
+        XCTAssertTrue(env.sceneDependent.placements.allSatisfy { $0.condition.contains("Conditional") })
+        XCTAssertTrue(env.transferable.note.contains("any scene"))
+    }
+
+    func testCameraHandOffIgnoresSetAsideAndUninterpretableEnvironmentData() throws {
+        var wall = Canvas(fill: "wall (other)")
+        paintPerson(&wall)
+        wall.paint("cow", x: 0..<100, y: 0..<55)
+        let upper = CGRect(x: 0.40, y: 0.50, width: 0.15, height: 0.20)
+        let with = [photoResult(order: 0, canvas: wall, humans: [human(personBox, upper: upper)]),
+                    photoResult(order: 1, canvas: nil, humans: [human(personBox, upper: upper)]),
+                    closeUpPhoto(2)]
+        let without = with.map { r -> PhotoResult in var copy = r; copy.environment = nil; return copy }
+        let a = CameraProfileBridge.make(profile: ProfileAggregator.aggregate(with), results: with)
+        let b = CameraProfileBridge.make(profile: ProfileAggregator.aggregate(without), results: without)
+        XCTAssertEqual(a.photoCount, b.photoCount)
+        XCTAssertEqual(a.subjectPositionDistribution?.meanX, b.subjectPositionDistribution?.meanX)
+        XCTAssertEqual(a.subjectPositionDistribution?.meanY, b.subjectPositionDistribution?.meanY)
+        XCTAssertEqual(a.subjectSizeDistribution?.meanArea, b.subjectSizeDistribution?.meanArea)
+    }
+
+    func testTheHighlightRasterEmphasisesOnlyTheChosenRegion() throws {
+        var c = Canvas(fill: "sky (other)")
+        c.paint("building (other)", x: 0..<50, y: 0..<100)
+        let g = grid(c)
+        func alpha(_ image: UIImage?, x: Int, y: Int) throws -> UInt8 {
+            let cg = try XCTUnwrap(image?.cgImage)
+            let data = try XCTUnwrap(cg.dataProvider?.data)
+            let bytes = CFDataGetBytePtr(data)!
+            return bytes[(y * cg.width + x) * 4 + 3]
+        }
+        let all = OverlayRasterizer.segmentation(g)
+        let building = OverlayRasterizer.segmentation(g, highlight: "architecture")
+        XCTAssertEqual(try alpha(all, x: 10, y: 50), try alpha(all, x: 90, y: 50), "without a highlight every region shares one opacity")
+        XCTAssertGreaterThan(try alpha(building, x: 10, y: 50), try alpha(building, x: 90, y: 50) * 4,
+                             "the highlighted region is far stronger than the rest")
+    }
+
+    func testASetAsideRegionIsDrawnFaintlyButNotRemoved() throws {
+        var c = Canvas(fill: "sky (other)")
+        c.paint("building (other)", x: 0..<50, y: 0..<100)
+        let g = grid(c)
+        func alpha(_ image: UIImage?, x: Int, y: Int) throws -> UInt8 {
+            let cg = try XCTUnwrap(image?.cgImage)
+            let data = try XCTUnwrap(cg.dataProvider?.data)
+            return CFDataGetBytePtr(data)![(y * cg.width + x) * 4 + 3]
+        }
+        let plain = OverlayRasterizer.segmentation(g)
+        let aside = OverlayRasterizer.segmentation(g, setAside: ["architecture"])
+        XCTAssertEqual(try alpha(aside, x: 90, y: 50), try alpha(plain, x: 90, y: 50), "a region that is used is drawn as before")
+        XCTAssertGreaterThan(try alpha(aside, x: 10, y: 50), 0, "the set-aside region is still drawn: it is what the model said")
+        XCTAssertLessThan(try alpha(aside, x: 10, y: 50), try alpha(plain, x: 10, y: 50) / 2,
+                          "but far fainter than a region that is used")
+        // Choosing it in the legend still shows it at the normal highlight strength.
+        let chosen = OverlayRasterizer.segmentation(g, highlight: "architecture", setAside: ["architecture"])
+        XCTAssertEqual(try alpha(chosen, x: 10, y: 50), try alpha(OverlayRasterizer.segmentation(g, highlight: "architecture"), x: 10, y: 50))
     }
 }

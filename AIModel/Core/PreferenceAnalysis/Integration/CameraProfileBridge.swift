@@ -20,6 +20,12 @@ import CoreGraphics
 ///
 /// A distribution is flagged consistent only with two or more samples and a
 /// spread within the camera's tolerances (position 0.15, size 0.10).
+///
+/// LIVE PERSONALISATION. The same hand-off also carries `livePreferences`, adapted by
+/// `LiveCompositionPreferenceAdapter` from the profile's own evidence rules (coverage,
+/// evidence quality, recurrence, per-orientation comparison). It is the only input the live
+/// camera uses to judge subject scale and horizontal position when present. Every field
+/// above is unchanged and still feeds vertical position and the guide box.
 enum CameraProfileBridge {
 
     static let positionTolerance = 0.15
@@ -69,7 +75,8 @@ enum CameraProfileBridge {
             goldenRatioDistribution: nil, goldenRatioHitRatio: nil,
             summary: "", insights: [], analyses: [], photos: [], mixedPatterns: [],
             limitations: profile.limitations,
-            generatedAt: profile.generatedAt)
+            generatedAt: profile.generatedAt,
+            livePreferences: LiveCompositionPreferenceAdapter.make(profile: profile, results: results))
     }
 
     private static func mean(_ v: [Double]) -> Double { v.reduce(0, +) / Double(max(1, v.count)) }
