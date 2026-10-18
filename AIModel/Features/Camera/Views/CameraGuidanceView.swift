@@ -67,24 +67,6 @@ struct CameraGuidanceView: View {
         )
     }
 
-    /// The guide derived from the user's measured placement habit.
-    ///
-    /// Nil when there is no profile, or the placement is too inconsistent to
-    /// suggest a position — in which case nothing is drawn rather than a fixed
-    /// box that would imply a preference the user does not have.
-    private var resolvedGuide: SubjectGuideResolver.Guide? {
-        let guide = SubjectGuideResolver.resolve(
-            position: profile?.halfBodyPositionDistribution,
-            photoCount: profile?.photoCount ?? 0
-        )
-
-        // `isConfident` is false both when there is no data and when the data is
-        // too scattered to act on. Either way, drawing a box would be inventing
-        // a preference the photographer does not have.
-        guard guide.isConfident else { return nil }
-        return guide
-    }
-
     // MARK: - Top Bar
 
     /// Empty black bar.
@@ -110,23 +92,25 @@ struct CameraGuidanceView: View {
             if viewModel.isSessionRunning {
                 CameraPreviewRepresentable(viewModel: viewModel)
                     .overlay {
-                        // Guide first, detection on top: the dashed guide is the
-                        // TARGET, the solid box is the CURRENT state, and the
-                        // user reads them as "move the box onto the guide".
-                        if let guide = resolvedGuide {
-                            SubjectGuideBox(
-                                center: guide.center,
-                                spread: guide.spread,
-                                isConfident: guide.isConfident
-                            )
+                        // Every overlay is expressed in camera-FRAME space, and the preview
+                        // aspect-fills (crops) the frame, so they are placed together through
+                        // one container that matches the picture.
+                        FrameSpaceOverlay(frameSize: viewModel.frameSize) {
+                            // Guide first, detection on top: the dashed guide is the
+                            // TARGET, the solid box is the CURRENT state, and the
+                            // user reads them as "move the box onto the guide". It is
+                            // the same target the evaluator enforces.
+                            if let target = viewModel.guideTarget {
+                                SubjectGuideBox(target: target)
+                            }
+                            // Object labels under the subject box: context, not target.
+                            ObjectLabelsOverlay(objects: viewModel.detectedObjects)
+                            SubjectBoxOverlay(box: viewModel.subjectBox)
+                            // Focus square last: it marks where the lens is focused,
+                            // on the subject's face, like the stock Camera app.
+                            FocusIndicatorOverlay(point: viewModel.focusPoint,
+                                                  pulseID: viewModel.focusPulseID)
                         }
-                        // Object labels under the subject box: context, not target.
-                        ObjectLabelsOverlay(objects: viewModel.detectedObjects)
-                        SubjectBoxOverlay(box: viewModel.subjectBox)
-                        // Focus square last: it marks where the lens is focused,
-                        // on the subject's face, like the stock Camera app.
-                        FocusIndicatorOverlay(point: viewModel.focusPoint,
-                                              pulseID: viewModel.focusPulseID)
                     }
                     .overlay(alignment: .top) {
                         // Pinned to the top so it never covers the subject at
@@ -169,31 +153,64 @@ struct CameraGuidanceView: View {
     // MARK: - Composition Banner
 
     /// The single live instruction (composition or scene), shown only when it
-    /// has stabilised. Green once the shot is ready.
+    /// has stabilised, with a short reason underneath when one can be given accurately.
+    /// Green with a check mark once the shot is ready (the check means readiness is not
+    /// carried by colour alone). When there is no instruction, a quiet line says why no
+    /// saved preference could be applied, if that is the case.
     ///
-    /// Deliberately one line and terse — the engines already picked the single
-    /// most important thing to say.
+    /// Sized with Dynamic Type; the text wraps rather than truncating, and the banner
+    /// stays at the top so it never covers the subject.
     private var compositionBanner: some View {
-        Group {
+        VStack(spacing: 6) {
             if let instruction = viewModel.compositionInstruction {
-                Text(instruction)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(viewModel.isCompositionReady ? Color.green : Color.white)
-                    .lineLimit(2)
+                let ready = viewModel.isCompositionReady
+                VStack(spacing: 2) {
+                    HStack(spacing: 6) {
+                        if ready {
+                            Image(systemName: "checkmark.circle.fill")
+                                .accessibilityHidden(true)
+                        }
+                        Text(instruction)
+                            .font(.subheadline.weight(.semibold))
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(ready ? Color.green : Color.white)
+
+                    if let detail = viewModel.compositionDetail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.72),
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .padding(.horizontal, 16)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityText(instruction: instruction, detail: viewModel.compositionDetail, ready: ready))
+                .accessibilityAddTraits(.updatesFrequently)
+                .transition(.opacity)
+            } else if let limitation = viewModel.compositionLimitation {
+                Text(limitation)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.85))
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(
-                        (viewModel.isCompositionReady ? Color.green : Color.black)
-                            .opacity(0.72),
-                        in: Capsule()
-                    )
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .padding(.horizontal, 16)
-                    .accessibilityAddTraits(.updatesFrequently)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .accessibilityLabel("No saved style applied. \(limitation)")
+                    .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.compositionInstruction)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.compositionLimitation)
+    }
+
+    private func accessibilityText(instruction: String, detail: String?, ready: Bool) -> String {
+        [instruction, detail].compactMap { $0 }.joined(separator: ". ")
     }
 
     // MARK: - Bottom Bar

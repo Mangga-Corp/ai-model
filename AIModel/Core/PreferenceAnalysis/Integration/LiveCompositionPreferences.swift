@@ -119,6 +119,10 @@ nonisolated struct ScalePreference: Hashable, Sendable {
     /// Coefficient of variation of the areas (standard deviation / mean).
     let spreadRatio: Double
     let observationCount: Int
+    /// Median width / height of the reference boxes in normalised frame space. Used ONLY to
+    /// draw the target at the right shape; it is not part of the comparison, which is on area.
+    /// Nil when it was not measured, in which case no scaled target is drawn.
+    var targetAspect: Double? = nil
 }
 
 /// Everything learned for one frame orientation.
@@ -131,6 +135,28 @@ nonisolated struct OrientationPreferences: Hashable, Sendable {
     static func unavailable(_ reason: PreferenceUnavailableReason, usable: Int = 0) -> OrientationPreferences {
         OrientationPreferences(usableObservationCount: usable,
                                horizontal: .unavailable(reason), scale: .unavailable(reason))
+    }
+
+    // MARK: Checked values
+    //
+    // The ONE place a stored value is validated before use. The preference evaluator and the
+    // on-screen guide both read these, so they can never disagree about what the target is,
+    // or about whether there is one.
+
+    /// The horizontal preference, or `.unavailable(.invalidPreferenceData)` if its target is
+    /// not a usable position (not finite, or outside the frame).
+    var checkedHorizontal: PreferenceSupport<HorizontalPreference> {
+        guard case .supported(let preference) = horizontal else { return horizontal }
+        return preference.targetX.isFinite && (0...1).contains(preference.targetX)
+            ? horizontal : .unavailable(.invalidPreferenceData)
+    }
+
+    /// The scale preference, or `.unavailable(.invalidPreferenceData)` if its target is not a
+    /// usable area fraction.
+    var checkedScale: PreferenceSupport<ScalePreference> {
+        guard case .supported(let preference) = scale else { return scale }
+        return preference.targetArea.isFinite && preference.targetArea > 0 && preference.targetArea <= 1
+            ? scale : .unavailable(.invalidPreferenceData)
     }
 }
 

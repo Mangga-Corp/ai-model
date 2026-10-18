@@ -69,6 +69,21 @@ nonisolated struct PersonalizedCompositionOutcome: Hashable, Sendable {
     }
 }
 
+// MARK: - Hysteresis state
+
+/// Which mismatches were found on the PREVIOUS pass, fed back in so a problem that has just
+/// been flagged is only treated as resolved once it is clearly back inside its tolerance
+/// (`GuidanceStabilityPolicy.releaseFraction`). It is the only state the stateless evaluators
+/// need, and it is plain data owned by the caller: pass `[]` for "nothing was flagged".
+nonisolated struct ActiveMismatches: OptionSet, Hashable, Sendable {
+    let rawValue: Int
+    static let horizontal = ActiveMismatches(rawValue: 1 << 0)
+    static let tooSmall   = ActiveMismatches(rawValue: 1 << 1)
+    static let tooLarge   = ActiveMismatches(rawValue: 1 << 2)
+    static let vertical   = ActiveMismatches(rawValue: 1 << 3)
+    static let clipped    = ActiveMismatches(rawValue: 1 << 4)
+}
+
 // MARK: - Live inputs
 
 /// What the camera knows about THIS frame, beyond the box itself, that decides whether the
@@ -120,17 +135,21 @@ nonisolated struct PersonalizedCompositionEvaluator: Sendable {
     let clipMargin: CGFloat
     /// Oldest acceptable measurement. Detection runs about every 0.14 s, so this allows three
     /// missed passes before a measurement stops being treated as current.
-    var maximumObservationAge: TimeInterval = 0.5
+    var maximumObservationAge: TimeInterval = GuidanceStabilityPolicy.maximumObservationAge
 
     /// Boxes may overshoot the frame by this much (detector rounding) before they are invalid.
     static let boundsSlack: CGFloat = 0.02
 
+    /// - Parameter latched: mismatches flagged on the previous pass. A latched mismatch needs
+    ///   `GuidanceStabilityPolicy.releaseFraction` of its tolerance to clear; an unlatched one
+    ///   is flagged at the plain tolerance, exactly as without hysteresis.
     func evaluate(box: CGRect?,
                   frameSize: CGSize,
                   isMirrored: Bool,
                   capturedAt: TimeInterval,
                   now: TimeInterval,
-                  preferences: LiveCompositionPreferences?) -> PersonalizedCompositionOutcome {
+                  preferences: LiveCompositionPreferences?,
+                  latched: ActiveMismatches = []) -> PersonalizedCompositionOutcome {
 
         func both(_ e: PreferenceEvaluation) -> PersonalizedCompositionOutcome {
             PersonalizedCompositionOutcome(horizontal: e, scale: e)
@@ -149,24 +168,21 @@ nonisolated struct PersonalizedCompositionEvaluator: Sendable {
         let (normalized, problem) = normalise(box, isMirrored: isMirrored, capturedAt: capturedAt, now: now)
 
         return PersonalizedCompositionOutcome(
-            horizontal: resolve(slice.horizontal, problem: problem) { preference in
-                guard preference.targetX.isFinite, (0...1).contains(preference.targetX) else {
-                    return .preferenceUnavailable(.invalidPreferenceData)
-                }
+            horizontal: resolve(slice.checkedHorizontal, problem: problem) { preference in
                 let observed = Double(normalized.midX)
+                let tolerance = latched.contains(.horizontal)
+                    ? positionTolerance * GuidanceStabilityPolicy.releaseFraction : positionTolerance
                 let deviation = PreferenceDeviation(observed: observed, target: preference.targetX,
-                                                    offset: observed - preference.targetX, tolerance: positionTolerance)
-                return abs(deviation.offset) > positionTolerance ? .mismatch(deviation) : .matched(deviation)
+                                                    offset: observed - preference.targetX, tolerance: tolerance)
+                return abs(deviation.offset) > tolerance ? .mismatch(deviation) : .matched(deviation)
             },
-            scale: resolve(slice.scale, problem: problem) { preference in
-                guard preference.targetArea.isFinite, preference.targetArea > 0, preference.targetArea <= 1 else {
-                    return .preferenceUnavailable(.invalidPreferenceData)
-                }
+            scale: resolve(slice.checkedScale, problem: problem) { preference in
                 let area = Double(normalized.width * normalized.height)
                 let deviation = PreferenceDeviation(observed: area, target: preference.targetArea,
                                                     offset: area / preference.targetArea - 1, tolerance: sizeTolerance)
-                let lower = preference.targetArea * (1 - sizeTolerance)
-                let upper = preference.targetArea * (1 + sizeTolerance)
+                let release = GuidanceStabilityPolicy.releaseFraction
+                let lower = preference.targetArea * (1 - (latched.contains(.tooSmall) ? sizeTolerance * release : sizeTolerance))
+                let upper = preference.targetArea * (1 + (latched.contains(.tooLarge) ? sizeTolerance * release : sizeTolerance))
                 return (area < lower || area > upper) ? .mismatch(deviation) : .matched(deviation)
             })
     }

@@ -667,11 +667,11 @@ final class LiveCompositionPreferenceTests: XCTestCase {
                                               accounting: ReferenceAccounting())
         let e = composition.evaluate(measurement: person(live(cx: 0.2, w: 0.2, h: 0.2)), position: nil, size: nil, photoCount: 0,
                                      personalization: context(none))
-        // Pre-existing behaviour, pinned knowingly: with no issue the engine still announces
-        // "Ready to capture". What it must never do is claim a habit ("your usual ...") it cannot support.
+        // Phase 2: nothing was compared, so nothing is announced. Previously this said "Ready to capture".
+        XCTAssertFalse(e.isReady)
+        XCTAssertEqual(e.applicability, .noUsablePreference(.noRecurringPattern))
         let shown = announced(Array(repeating: e, count: 12)).compactMap { $0 }
-        XCTAssertFalse(shown.isEmpty)
-        XCTAssertTrue(shown.allSatisfy { $0 == "Ready to capture" })
+        XCTAssertTrue(shown.isEmpty, "no instruction, and in particular no false 'ready'")
     }
 
     // MARK: - Integration: view model, profile to instruction
@@ -725,7 +725,8 @@ final class LiveCompositionPreferenceTests: XCTestCase {
         XCTAssertFalse(vm.isCompositionReady)
 
         drive(vm, box: live(cx: 0.25), frames: 3)
-        XCTAssertEqual(vm.compositionInstruction, text(for: .subjectOffCentreHorizontally))
+        // The subject is LEFT of where the reference photos put it, so it must move RIGHT in the frame.
+        XCTAssertEqual(vm.compositionInstruction, "Move the subject slightly toward the right of the frame")
 
         drive(vm, box: live(), frames: 5)
         XCTAssertTrue(vm.isCompositionReady)
@@ -768,7 +769,7 @@ final class LiveCompositionPreferenceTests: XCTestCase {
         drive(vm, box: live(w: 0.2, h: 0.2), frames: 6, capturedAt: 100, now: 101)     // 1 s old
         XCTAssertNil(vm.compositionInstruction)
         XCTAssertFalse(vm.isCompositionReady)
-        XCTAssertNotNil(vm.compositionLimitation)
+        XCTAssertNil(vm.compositionLimitation, "a temporarily unusable measurement is not worth a message")
     }
 
     func testAPortraitHabitDoesNotGuideALandscapeFrame() async {
@@ -793,7 +794,8 @@ final class LiveCompositionPreferenceTests: XCTestCase {
         for _ in 0..<6 {
             plain.evaluateComposition(personBox: box, frameSize: portraitFrame, capturedAt: 100, now: 100.05, isMirrored: false)
         }
-        XCTAssertEqual(plain.compositionInstruction, text(for: .subjectOffCentreHorizontally))
+        // Subject on the right, habit on the left: the subject must move LEFT in the frame.
+        XCTAssertEqual(plain.compositionInstruction, "Move the subject slightly toward the left of the frame")
         XCTAssertFalse(plain.isCompositionReady)
     }
 }

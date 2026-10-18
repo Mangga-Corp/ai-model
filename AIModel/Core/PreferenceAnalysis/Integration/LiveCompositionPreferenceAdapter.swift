@@ -161,7 +161,10 @@ nonisolated enum LiveCompositionPreferenceAdapter {
         }
         let ratio = summary.standardDeviation / summary.mean
         guard ratio <= ProfileAggregator.areaCoefficientOfVariation else { return .unavailable(.tooVariable) }
+        // Shape of the target, for drawing only. Every box has positive width and height here.
+        let aspects = samples.map { Double($0.upper.width) / Double($0.upper.height) }
         return .supported(ScalePreference(targetArea: summary.median, spreadRatio: ratio,
-                                          observationCount: summary.count))
+                                          observationCount: summary.count,
+                                          targetAspect: NumericSummary.make(aspects)?.median))
     }
 }
