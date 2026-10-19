@@ -30,6 +30,19 @@ nonisolated struct ObjectRulebook: Sendable {
     var busyObjectCount = 6
     var maximumSnapshotAge: TimeInterval = 3
 
+    // Subject occlusion. UNVALIDATED starting values, chosen to be conservative: a warning needs
+    // BOTH a large object share of the subject's core AND little visible person there.
+    /// Share of the subject's core that one object must cover.
+    var occlusionObjectCoverage = 0.40
+    /// The person's own pixels must cover at most this share of the same core.
+    var occlusionMaxPersonCoverage = 0.50
+    /// The snapshot's person must contain this much of the live subject box, which shows the
+    /// snapshot still describes the person being guided.
+    var occlusionMinimumPersonMatch = 0.60
+    /// The scene snapshot is refreshed about once a second and the subject moves, so this rule
+    /// accepts only a fresher one than the others do.
+    var occlusionMaximumSnapshotAge: TimeInterval = 1.5
+
     /// - Parameters:
     ///   - subjectBox: Live upper-body box (normalised, top-left), or nil.
     ///   - targetCenter: Where the user usually places the subject (the dashed
@@ -45,7 +58,12 @@ nonisolated struct ObjectRulebook: Sendable {
         var result: [Recommendation] = []
 
         if let box = subjectBox {
-            if let rec = objectBehindHead(things, subjectBox: box) { result.append(rec) }
+            // An occluding object near the head would also trip "behind the head": say it once.
+            if let rec = subjectOccluded(scene, subjectBox: box, now: now) {
+                result.append(rec)
+            } else if let rec = objectBehindHead(things, subjectBox: box) {
+                result.append(rec)
+            }
             if let rec = bystander(scene.objects, subjectBox: box) { result.append(rec) }
 
             let busy = things.filter { $0.areaFraction >= busyObjectMinimumArea }.count
@@ -83,6 +101,39 @@ nonisolated struct ObjectRulebook: Sendable {
     }
 
     /// Another person who is not the subject.
+    /// An object covers a large part of the subject's visible core.
+    ///
+    /// Not "an object is near or inside the box": it needs the object's own pixels over the
+    /// torso/face core while the person's pixels are largely missing there. Fails safe (nil) when
+    /// the snapshot is old, no person in it matches the live subject, the object is a carried or
+    /// worn item, or the label is implausibly large (a mislabelled surface, see
+    /// `RegionReliabilityAssessor`). The object is not named: a misread label would overstate it.
+    func subjectOccluded(_ scene: SceneSnapshot, subjectBox box: CGRect, now: Date) -> Recommendation? {
+        guard now.timeIntervalSince(scene.capturedAt) <= occlusionMaximumSnapshotAge, box.width > 0, box.height > 0 else { return nil }
+
+        // The snapshot's person pixels around the live box. An occluder can split one person into
+        // several components, so all that touch the box are used together.
+        let boxArea = box.width * box.height
+        let people = scene.objects.filter { $0.isPerson && !$0.boundingBox.intersection(box).isNull }
+        guard let first = people.first else { return nil }
+        let extent = people.dropFirst().reduce(first.boundingBox) { $0.union($1.boundingBox) }
+        let match = extent.intersection(box)
+        guard !match.isNull, Double(match.width * match.height / boxArea) >= occlusionMinimumPersonMatch else { return nil }
+
+        // Torso/face core: away from the box edges, where background and arms-length items sit.
+        let core = box.insetBy(dx: box.width * 0.2, dy: box.height * 0.15)
+        guard people.reduce(0, { $0 + $1.mask.coverage(of: core) }) <= occlusionMaxPersonCoverage else { return nil }
+
+        let occluded = scene.objects.contains { object in
+            guard !object.isPerson, object.areaFraction < RegionReliabilityAssessor.implausibleObjectArea,
+                  SegmentationTaxonomy.family(forLabel: object.label)?.group != .carriedItem else { return false }
+            return object.mask.coverage(of: core) >= occlusionObjectCoverage
+        }
+        guard occluded else { return nil }
+        return .init(kind: .subjectOccluded, priority: .notable,
+                     message: "An object is blocking too much of your subject. Move it away from them.")
+    }
+
     private func bystander(_ objects: [DetectedObject], subjectBox box: CGRect) -> Recommendation? {
         let others = objects.filter { object in
             guard object.isPerson, object.areaFraction >= minimumBystanderArea else { return false }

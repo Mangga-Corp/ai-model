@@ -26,6 +26,7 @@
 		180E4A163078D738005A17C4 /* EnvironmentAnalysisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */; };
 		180E4B113078D738005A17C4 /* LiveCompositionPreferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4B013078D738005A17C4 /* LiveCompositionPreferenceTests.swift */; };
 		180E4B133078D738005A17C4 /* GuidanceStabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4B033078D738005A17C4 /* GuidanceStabilityTests.swift */; };
+		180E4B143078D738005A17C4 /* SubjectOcclusionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4B043078D738005A17C4 /* SubjectOcclusionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +67,7 @@
 		180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentAnalysisTests.swift; sourceTree = "<group>"; };
 		180E4B013078D738005A17C4 /* LiveCompositionPreferenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveCompositionPreferenceTests.swift; sourceTree = "<group>"; };
 		180E4B033078D738005A17C4 /* GuidanceStabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidanceStabilityTests.swift; sourceTree = "<group>"; };
+		180E4B043078D738005A17C4 /* SubjectOcclusionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubjectOcclusionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -117,6 +119,7 @@
 				180E2FD03078D738005A17C4 /* CompositionEvaluatorTests.swift */,
 				180E4B013078D738005A17C4 /* LiveCompositionPreferenceTests.swift */,
 				180E4B033078D738005A17C4 /* GuidanceStabilityTests.swift */,
+				180E4B043078D738005A17C4 /* SubjectOcclusionTests.swift */,
 				180E2FE03078D738005A17C4 /* SceneInterpretationSamplerTests.swift */,
 				180E2FF03078D738005A17C4 /* TiltEvaluatorTests.swift */,
 				180E30103078D738005A17C4 /* BodyExtentTests.swift */,
@@ -234,6 +237,7 @@
 				180E2FD13078D738005A17C4 /* CompositionEvaluatorTests.swift in Sources */,
 				180E4B113078D738005A17C4 /* LiveCompositionPreferenceTests.swift in Sources */,
 				180E4B133078D738005A17C4 /* GuidanceStabilityTests.swift in Sources */,
+				180E4B143078D738005A17C4 /* SubjectOcclusionTests.swift in Sources */,
 				180E2FE13078D738005A17C4 /* SceneInterpretationSamplerTests.swift in Sources */,
 				180E2FF13078D738005A17C4 /* TiltEvaluatorTests.swift in Sources */,
 				180E30113078D738005A17C4 /* BodyExtentTests.swift in Sources */,
@@ -392,7 +396,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "This app needs access to the camera to analyze your scene and provide real-time composition guidance.";
@@ -430,7 +434,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "This app needs access to the camera to analyze your scene and provide real-time composition guidance.";
@@ -466,7 +470,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -491,7 +495,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
