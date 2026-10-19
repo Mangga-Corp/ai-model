@@ -10,6 +10,7 @@ nonisolated struct Recommendation: Sendable, Equatable {
         case showFullBuilding
         case stepAwayFromBackground
         case objectBehindHead
+        case subjectOccluded
         case objectInTargetSpot
         case personInBackground
         case busyBackground

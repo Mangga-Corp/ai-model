@@ -105,8 +105,8 @@ struct CameraGuidanceView: View {
                             if let target = viewModel.guideTarget {
                                 SubjectGuideBox(target: target)
                             }
-                            // Object labels under the subject box: context, not target.
-                            ObjectLabelsOverlay(objects: viewModel.detectedObjects)
+                            // No segmentation / detected-object overlay is drawn in the live preview:
+                            // those results only feed guidance rules (for example subject occlusion).
                             SubjectBoxOverlay(box: viewModel.subjectBox)
                             // Focus square last: it marks where the lens is focused,
                             // on the subject's face, like the stock Camera app.
