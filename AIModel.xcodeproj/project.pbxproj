@@ -20,6 +20,12 @@
 		180E30013078D738005A17C4 /* DeviceAttitudeServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E30003078D738005A17C4 /* DeviceAttitudeServiceTests.swift */; };
 		180E30113078D738005A17C4 /* BodyExtentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E30103078D738005A17C4 /* BodyExtentTests.swift */; };
 		180E30213078D738005A17C4 /* HeadAngleDescriptorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E30203078D738005A17C4 /* HeadAngleDescriptorTests.swift */; };
+		180E4A113078D738005A17C4 /* PreferenceAnalysisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A013078D738005A17C4 /* PreferenceAnalysisTests.swift */; };
+		180E4A123078D738005A17C4 /* PreferenceProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A023078D738005A17C4 /* PreferenceProfileTests.swift */; };
+		180E4A143078D738005A17C4 /* CameraAngleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A043078D738005A17C4 /* CameraAngleTests.swift */; };
+		180E4A163078D738005A17C4 /* EnvironmentAnalysisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */; };
+		180E4B113078D738005A17C4 /* LiveCompositionPreferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4B013078D738005A17C4 /* LiveCompositionPreferenceTests.swift */; };
+		180E4B133078D738005A17C4 /* GuidanceStabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180E4B033078D738005A17C4 /* GuidanceStabilityTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,6 +60,12 @@
 		180E30003078D738005A17C4 /* DeviceAttitudeServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAttitudeServiceTests.swift; sourceTree = "<group>"; };
 		180E30103078D738005A17C4 /* BodyExtentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BodyExtentTests.swift; sourceTree = "<group>"; };
 		180E30203078D738005A17C4 /* HeadAngleDescriptorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadAngleDescriptorTests.swift; sourceTree = "<group>"; };
+		180E4A013078D738005A17C4 /* PreferenceAnalysisTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferenceAnalysisTests.swift; sourceTree = "<group>"; };
+		180E4A023078D738005A17C4 /* PreferenceProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferenceProfileTests.swift; sourceTree = "<group>"; };
+		180E4A043078D738005A17C4 /* CameraAngleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAngleTests.swift; sourceTree = "<group>"; };
+		180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentAnalysisTests.swift; sourceTree = "<group>"; };
+		180E4B013078D738005A17C4 /* LiveCompositionPreferenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveCompositionPreferenceTests.swift; sourceTree = "<group>"; };
+		180E4B033078D738005A17C4 /* GuidanceStabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidanceStabilityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -103,6 +115,8 @@
 				180E2FA03078D738005A17C4 /* GeometryTests.swift */,
 				180E2FC03078D738005A17C4 /* SubjectGuideResolverTests.swift */,
 				180E2FD03078D738005A17C4 /* CompositionEvaluatorTests.swift */,
+				180E4B013078D738005A17C4 /* LiveCompositionPreferenceTests.swift */,
+				180E4B033078D738005A17C4 /* GuidanceStabilityTests.swift */,
 				180E2FE03078D738005A17C4 /* SceneInterpretationSamplerTests.swift */,
 				180E2FF03078D738005A17C4 /* TiltEvaluatorTests.swift */,
 				180E30103078D738005A17C4 /* BodyExtentTests.swift */,
@@ -113,6 +127,10 @@
 				180E2FA33078D738005A17C4 /* LightingDirectionServiceTests.swift */,
 				180E2FA43078D738005A17C4 /* VImageProbeTests.swift */,
 				180E2FA53078D738005A17C4 /* CompositionAnalysisTests.swift */,
+				180E4A013078D738005A17C4 /* PreferenceAnalysisTests.swift */,
+				180E4A023078D738005A17C4 /* PreferenceProfileTests.swift */,
+				180E4A043078D738005A17C4 /* CameraAngleTests.swift */,
+				180E4A063078D738005A17C4 /* EnvironmentAnalysisTests.swift */,
 			);
 			path = AIModelTests;
 			sourceTree = "<group>";
@@ -214,6 +232,8 @@
 				180E2FB43078D738005A17C4 /* GeometryTests.swift in Sources */,
 				180E2FC13078D738005A17C4 /* SubjectGuideResolverTests.swift in Sources */,
 				180E2FD13078D738005A17C4 /* CompositionEvaluatorTests.swift in Sources */,
+				180E4B113078D738005A17C4 /* LiveCompositionPreferenceTests.swift in Sources */,
+				180E4B133078D738005A17C4 /* GuidanceStabilityTests.swift in Sources */,
 				180E2FE13078D738005A17C4 /* SceneInterpretationSamplerTests.swift in Sources */,
 				180E2FF13078D738005A17C4 /* TiltEvaluatorTests.swift in Sources */,
 				180E30113078D738005A17C4 /* BodyExtentTests.swift in Sources */,
@@ -223,6 +243,10 @@
 				180E2FB63078D738005A17C4 /* EvidenceValidationTests.swift in Sources */,
 				180E2FB83078D738005A17C4 /* LightingDirectionServiceTests.swift in Sources */,
 				180E2FBA3078D738005A17C4 /* CompositionAnalysisTests.swift in Sources */,
+				180E4A113078D738005A17C4 /* PreferenceAnalysisTests.swift in Sources */,
+				180E4A123078D738005A17C4 /* PreferenceProfileTests.swift in Sources */,
+				180E4A143078D738005A17C4 /* CameraAngleTests.swift in Sources */,
+				180E4A163078D738005A17C4 /* EnvironmentAnalysisTests.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -368,7 +392,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "This app needs access to the camera to analyze your scene and provide real-time composition guidance.";
@@ -386,7 +410,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.brandon.AIModel;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kevinj.AIModel;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -406,7 +430,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "This app needs access to the camera to analyze your scene and provide real-time composition guidance.";
@@ -424,7 +448,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.brandon.AIModel;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kevinj.AIModel;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -442,7 +466,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -451,7 +475,7 @@
 					"@test_host/../../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.brandon.AIModelTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kevinj.AIModelTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -467,7 +491,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = VTRSS39M6X;
+				DEVELOPMENT_TEAM = 25HCRL7VJ3;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -476,7 +500,7 @@
 					"@test_host/../../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.brandon.AIModelTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kevinj.AIModelTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;

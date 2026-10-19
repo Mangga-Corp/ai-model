@@ -54,13 +54,25 @@ final class CameraPreviewViewModel: ObservableObject {
     /// is stable enough to show.
     @Published private(set) var compositionInstruction: String?
 
+    /// A short "why" under the instruction, or what "ready" was based on. Nil when there is
+    /// nothing accurate to add.
+    @Published private(set) var compositionDetail: String?
+
     /// True once the composition has held "ready" long enough to announce AND
     /// no scene fix is pending.
     @Published private(set) var isCompositionReady = false
 
-    /// Honest limitation text when the profile is too thin to apply a target,
-    /// or nil when preferences are being applied normally.
+    /// Plain-language reason no saved preference could be compared with the live view, shown
+    /// only when there is no instruction to show. Nil when preferences are being applied, or
+    /// when the situation needs no explanation.
     @Published private(set) var compositionLimitation: String?
+
+    /// Pixel size of the camera frame the overlays are expressed in. The preview aspect-fills
+    /// it, so overlays are placed through `PreviewGeometry` rather than scaled to the view.
+    @Published private(set) var frameSize: CGSize?
+
+    /// Where the dashed guide is drawn (frame space), or nil when there is no target to show.
+    @Published private(set) var guideTarget: LiveGuideTarget?
 
     /// Live tilt instruction derived from the device's physical pitch versus the
     /// profile's preferred horizon angle, or nil when on target / unavailable.
@@ -106,12 +118,18 @@ final class CameraPreviewViewModel: ObservableObject {
     /// The preference profile the composition targets are derived from.
     /// Injected rather than read from a singleton so the camera can be opened
     /// with no profile at all, in which case no guidance is offered.
-    var profile: PhotographicPreferenceProfile?
+    var profile: PhotographicPreferenceProfile? {
+        didSet { refreshGuideTarget() }
+    }
 
     // MARK: - Guidance engines
 
     private let evaluator = CompositionEvaluator()
     private var guidance = CompositionGuidanceEngine()
+    /// Keeps guidance on the same person from pass to pass.
+    private var subjectTracker = LiveSubjectTracker()
+    /// Mismatches flagged on the previous pass, for spatial hysteresis.
+    private var latchedMismatches: ActiveMismatches = []
     private let attitudeService = DeviceAttitudeService()
     private let tiltEvaluator = TiltEvaluator()
 
@@ -421,24 +439,75 @@ final class CameraPreviewViewModel: ObservableObject {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let frameSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
                                height: CVPixelBufferGetHeight(pixelBuffer))
+        // When this frame arrived, so a measurement that takes too long to come back is not
+        // treated as current by the preference-aware checks.
+        let capturedAt = ProcessInfo.processInfo.systemUptime
 
         offerSceneUnderstanding(pixelBuffer)
 
         Task {
-            guard let visionRect = await detector.detect(in: pixelBuffer) else {
-                subjectBox = nil
-                updateFocus(subjectBox: nil)
-                // Still evaluate so a lost subject is reported, not silently
-                // treated as "nothing to guide on".
-                evaluateComposition(personBox: nil)
-                return
+            let found = await detector.detectAll(in: pixelBuffer)
+            let detections = found.map {
+                LiveSubjectDetection(box: Self.toViewSpace($0.rect, frameSize: frameSize), confidence: $0.confidence)
             }
-
-            let overlayRect = Self.toViewSpace(visionRect, frameSize: frameSize)
-            subjectBox = overlayRect
-            updateFocus(subjectBox: overlayRect)
-            evaluateComposition(personBox: overlayRect)
+            processDetections(detections, frameSize: frameSize, capturedAt: capturedAt)
         }
+    }
+
+    /// One detection pass, from every person found to the instruction on screen.
+    ///
+    /// The tracker decides WHO is guided (and ignores a pass that arrives too late); the
+    /// result then follows the same path as before. Internal so the whole flow can be tested
+    /// without a camera.
+    func processDetections(_ detections: [LiveSubjectDetection],
+                           frameSize: CGSize,
+                           capturedAt: TimeInterval,
+                           now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                           isMirrored: Bool? = nil) {
+        let update = subjectTracker.update(detections: detections, capturedAt: capturedAt, now: now)
+
+        // A pass that arrived too late (or out of order) must not drive anything.
+        if update.state == .stale { return }
+
+        updateFrameSize(frameSize)
+
+        if update.subjectChanged {
+            // A different person (or the first one): nothing learned about the previous
+            // subject applies to this one.
+            guidance.reset()
+            latchedMismatches = []
+        } else if update.state == .lost || update.state == .none {
+            // Nobody is being tracked any more. (A subject merely HELD through a brief dropout
+            // keeps its hysteresis, so one missed pass does not reset it.)
+            latchedMismatches = []
+        }
+
+        // While the tracked subject is held through a brief dropout (or gone), no box is
+        // reported. The evaluation still runs so a lost subject is reported, not silently
+        // treated as "nothing to guide on".
+        if subjectBox != update.box { subjectBox = update.box }
+        updateFocus(subjectBox: update.box)
+        evaluateComposition(personBox: update.box, frameSize: frameSize, capturedAt: capturedAt,
+                            now: now, isMirrored: isMirrored)
+    }
+
+    private func updateFrameSize(_ size: CGSize) {
+        guard size != frameSize else { return }
+        frameSize = size
+        refreshGuideTarget()
+    }
+
+    /// Recomputes the dashed guide's target. Cheap, and only runs when the profile or the
+    /// camera's orientation changes.
+    private func refreshGuideTarget() {
+        let target: LiveGuideTarget?
+        if let profile {
+            let orientation = frameSize.flatMap { FrameOrientation(width: Double($0.width), height: Double($0.height)) }
+            target = LiveGuideTargetResolver.resolve(profile: profile, orientation: orientation)
+        } else {
+            target = nil
+        }
+        if target != guideTarget { guideTarget = target }
     }
 
     /// Hands the frame to the scene sampler.
@@ -473,11 +542,24 @@ final class CameraPreviewViewModel: ObservableObject {
     /// Fed from the same detection pass that publishes `subjectBox`, so guidance
     /// and the live box can never disagree. No-ops when there is no profile —
     /// with nothing to compare against, guidance would be inventing a preference.
-    private func evaluateComposition(personBox: CGRect?) {
+    ///
+    /// When the profile carries adapted preferences, subject scale and horizontal position are
+    /// judged by the preference-aware check; everything else, and every profile without them,
+    /// goes through the evaluator exactly as before. Internal (not private) so the whole
+    /// profile-to-instruction path can be unit-tested without a camera.
+    ///
+    /// - Parameters:
+    ///   - frameSize: pixel size of the buffer `personBox` was measured in.
+    ///   - capturedAt: `systemUptime` when that buffer arrived.
+    ///   - now: `systemUptime` of this evaluation.
+    ///   - isMirrored: nil reads the capture connection (the back camera is never mirrored).
+    func evaluateComposition(personBox: CGRect?,
+                             frameSize: CGSize,
+                             capturedAt: TimeInterval,
+                             now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                             isMirrored: Bool? = nil) {
         guard let profile else {
-            compositionInstruction = nil
-            isCompositionReady = false
-            compositionLimitation = nil
+            publish(instruction: nil, detail: nil, ready: false, limitation: nil)
             return
         }
 
@@ -486,16 +568,32 @@ final class CameraPreviewViewModel: ObservableObject {
             personLost: false
         )
 
+        let personalization = profile.livePreferences.map { preferences in
+            LivePersonalization(
+                preferences: preferences,
+                frameSize: frameSize,
+                isMirrored: isMirrored ?? videoOutput.connection(with: .video)?.isVideoMirrored ?? false,
+                capturedAt: capturedAt,
+                now: now
+            )
+        }
+
         let evaluation = evaluator.evaluate(
             measurement: measurement,
             position: profile.subjectPositionDistribution,
             size: profile.subjectSizeDistribution,
-            photoCount: profile.photoCount
+            photoCount: profile.photoCount,
+            personalization: personalization,
+            latched: latchedMismatches
         )
+        // Hysteresis: next pass sees which mismatches are active now. A pass with no subject
+        // leaves it alone; `processDetections` clears it when the subject is really gone.
+        if personBox != nil { latchedMismatches = evaluation.activeMismatches }
 
         // The guidance engine must see every evaluation to keep its stability
         // window honest, even on frames where scene advice wins the banner.
         var instruction = guidance.update(with: evaluation)
+        var detail = guidance.currentDetail
         var hasPendingSceneFix = false
 
         let latestScene = sceneUnderstanding.latest
@@ -516,15 +614,26 @@ final class CameraPreviewViewModel: ObservableObject {
         case .scene(let recommendation):
             if let stable = sceneRecommendationFilter.update(recommendation) {
                 instruction = stable.message
+                detail = nil          // a scene message carries its own wording
                 hasPendingSceneFix = true
             }
         }
 
         // Written once, at the end, so "ready" can never be shown while a
-        // scene fix is on screen.
-        compositionInstruction = instruction
-        isCompositionReady = guidance.isReadyStable && !hasPendingSceneFix
-        compositionLimitation = evaluation.limitation
+        // scene fix is on screen. The limitation is only worth showing when there is
+        // nothing else to say.
+        let ready = guidance.isReadyStable && !hasPendingSceneFix
+        let limitation = instruction == nil ? GuidanceWording.limitation(for: evaluation.applicability) : nil
+        publish(instruction: instruction, detail: detail, ready: ready, limitation: limitation)
+    }
+
+    /// Publishes the guidance state, touching a property only when its value changed, so an
+    /// unchanged instruction does not re-render the banner on every detection pass.
+    private func publish(instruction: String?, detail: String?, ready: Bool, limitation: String?) {
+        if compositionInstruction != instruction { compositionInstruction = instruction }
+        if compositionDetail != detail { compositionDetail = detail }
+        if isCompositionReady != ready { isCompositionReady = ready }
+        if compositionLimitation != limitation { compositionLimitation = limitation }
     }
 
     /// Centre of the dashed guide (where the user usually places the subject),
@@ -622,9 +731,9 @@ final class CameraPreviewViewModel: ObservableObject {
     /// instruction or scene does not persist into the next session.
     func resetComposition() {
         guidance.reset()
-        compositionInstruction = nil
-        isCompositionReady = false
-        compositionLimitation = nil
+        subjectTracker.reset()
+        latchedMismatches = []
+        publish(instruction: nil, detail: nil, ready: false, limitation: nil)
 
         sceneUnderstanding.reset()
         sceneRecommendationFilter.reset()
@@ -641,9 +750,10 @@ final class CameraPreviewViewModel: ObservableObject {
     /// needs flipping: Vision's origin is bottom-left with y increasing
     /// upward, SwiftUI's is top-left with y increasing downward.
     ///
-    /// Normalised coordinates are used precisely so the `resizeAspectFill`
-    /// crop cancels out: scaling uniformly and cropping preserves normalised
-    /// positions, so no pixel-level geometry is needed here.
+    /// The result is in FRAME space (normalised over the whole delivered frame). That is the
+    /// right space for evaluation, because the saved photo is the whole frame. It is NOT the
+    /// preview's space: the preview aspect-fills and crops, so anything DRAWN from these values
+    /// goes through `PreviewGeometry` (see `FrameSpaceOverlay`). The name is historical.
     static func toViewSpace(_ rect: CGRect, frameSize: CGSize) -> CGRect {
         CGRect(
             x: rect.origin.x,
@@ -693,7 +803,9 @@ final class CameraPreviewViewModel: ObservableObject {
 
 final class PersonDetector {
 
-    func detect(in pixelBuffer: CVPixelBuffer) async -> CGRect? {
+    /// Every person found in the frame, with Vision's confidence, as Vision reports them
+    /// (normalised, origin BOTTOM-left). Choosing among them is the tracker's job.
+    func detectAll(in pixelBuffer: CVPixelBuffer) async -> [(rect: CGRect, confidence: Double)] {
         var request = DetectHumanRectanglesRequest()
 
         // Upper body only — head and shoulders. This is the DEFAULT
@@ -705,33 +817,16 @@ final class PersonDetector {
         do {
             observations = try await request.perform(on: pixelBuffer)
         } catch {
-            return nil
+            return []
         }
-
-        // Largest person wins — the one the photographer is most likely
-        // framing. Folded explicitly rather than chained, since the chained
-        // form exceeds the compiler's type-checking budget.
-        var best: NormalizedRect?
-        var bestArea: CGFloat = -1
-
-        for observation in observations {
-            let rect = observation.boundingBox
-            let area = rect.width * rect.height
-            if area > bestArea {
-                bestArea = area
-                best = rect
-            }
-        }
-
-        guard let best else { return nil }
 
         // `NormalizedRect` is a separate type from `CGRect`; convert explicitly
         // so the caller's coordinate space is unambiguous.
-        return CGRect(
-            x: CGFloat(best.origin.x),
-            y: CGFloat(best.origin.y),
-            width: CGFloat(best.width),
-            height: CGFloat(best.height)
-        )
+        return observations.map { observation in
+            let box = observation.boundingBox
+            let rect = CGRect(x: CGFloat(box.origin.x), y: CGFloat(box.origin.y),
+                              width: CGFloat(box.width), height: CGFloat(box.height))
+            return (rect, Double(observation.confidence))
+        }
     }
 }

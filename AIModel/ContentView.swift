@@ -1,9 +1,14 @@
 import SwiftUI
 
 /// Root view — manages the main navigation flow.
-/// Flow: Select Photos → Analyze → Preference Profile
+/// Flow: Select Photos → Analysis (progress, then results) → Photo detail /
+/// Preference Profile → Camera Guidance.
+///
+/// The analysis session lives here, above the navigation stack, so results
+/// survive pushing and popping screens and are never recomputed.
 struct ContentView: View {
     @State private var path = NavigationPath()
+    @StateObject private var session = AnalysisSession()
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -11,23 +16,22 @@ struct ContentView: View {
                 path.append(AnalysisRoute(photos: photos))
             }
             .navigationDestination(for: AnalysisRoute.self) { route in
-                PhotoAnalysisView(
-                    selectedPhotos: route.photos,
-                    onComplete: { profile in
-                        path.append(profile)
+                AnalysisFlowView(
+                    session: session,
+                    photos: route.photos,
+                    onOpenCamera: {
+                        path.append(CameraRoute(profile: session.cameraGuidanceProfile()))
+                    },
+                    onExit: {
+                        path.removeLast(path.count)
                     }
                 )
             }
-            .navigationDestination(for: PhotographicPreferenceProfile.self) { profile in
-                PreferenceProfileView(
-                    profile: profile,
-                    onBack: {
-                        path.removeLast(path.count)
-                    },
-                    onOpenCamera: {
-                        path.append(CameraRoute(profile: profile))
-                    }
-                )
+            .navigationDestination(for: PhotoDetailRoute.self) { route in
+                PhotoResultDetailView(session: session, photoID: route.photoID)
+            }
+            .navigationDestination(for: ProfileRoute.self) { _ in
+                ProfileDetailView(session: session)
             }
             .navigationDestination(for: CameraRoute.self) { route in
                 CameraGuidanceView(

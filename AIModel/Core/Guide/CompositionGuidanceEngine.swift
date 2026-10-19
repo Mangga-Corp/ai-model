@@ -35,9 +35,20 @@ struct CompositionGuidanceEngine {
     private var announcedIssue: CompositionEvaluation.Issue?
     private var announcedReady: Bool = false
 
+    /// Direction of the announced position issue and what the last evaluation checked. They
+    /// belong to the ANNOUNCED issue, so they are latched here rather than read from whatever
+    /// evaluation happens to arrive when the text is rebuilt.
+    private var announcedHorizontal: CompositionEvaluation.HorizontalShift?
+    private var announcedVertical: CompositionEvaluation.VerticalShift?
+    private var lastApplied: CompositionEvaluation.AppliedChecks = []
+
     /// The instruction currently shown to the user, or nil when nothing is
     /// stable enough to show.
     private(set) var currentInstruction: String?
+
+    /// A short "why" for the instruction, or what "ready" was based on. Nil when there is no
+    /// accurate thing to add.
+    private(set) var currentDetail: String?
 
     /// True once "ready to capture" has been held long enough to announce.
     private(set) var isReadyStable: Bool = false
@@ -73,6 +84,20 @@ struct CompositionGuidanceEngine {
             announcedIssue = nil
         }
 
+        // Direction follows the announced issue. It is refreshed whenever the evaluation
+        // states it, so an overshoot flips the wording at once; and dropped with the issue.
+        lastApplied = evaluation.appliedChecks
+        if announcedIssue == .subjectOffCentreHorizontally {
+            announcedHorizontal = evaluation.horizontalShift ?? announcedHorizontal
+        } else {
+            announcedHorizontal = nil
+        }
+        if announcedIssue == .subjectOffCentreVertically {
+            announcedVertical = evaluation.verticalShift ?? announcedVertical
+        } else {
+            announcedVertical = nil
+        }
+
         // Announce ready only after it has held longer than a mere flicker.
         if readyCount >= readyHoldFrames {
             announcedReady = true
@@ -82,6 +107,7 @@ struct CompositionGuidanceEngine {
         isReadyStable = announcedReady
 
         currentInstruction = makeInstruction(for: announcedIssue, evaluation: evaluation)
+        currentDetail = makeDetail()
         return currentInstruction
     }
 
@@ -93,45 +119,40 @@ struct CompositionGuidanceEngine {
         readyCount = 0
         announcedIssue = nil
         announcedReady = false
+        announcedHorizontal = nil
+        announcedVertical = nil
+        lastApplied = []
         currentInstruction = nil
+        currentDetail = nil
         isReadyStable = false
     }
 
     // MARK: - Instruction text
 
-    /// Maps the announced issue to a practical instruction.
+    /// Maps the announced issue to a practical instruction. All wording lives in
+    /// `GuidanceWording`; this only chooses which message applies.
     ///
-    /// Text is chosen from the MEASURED problem, not hardcoded per scene. Each
-    /// case names a concrete camera action. Where the profile could not supply a
-    /// target, the copy says the measurement is approximate rather than asserting
-    /// a preference the user may not have.
+    /// Text is chosen from the MEASURED problem, not hardcoded per scene. A direction is
+    /// included only when the measurement established it, and "ready" is only said when a
+    /// preference was actually compared (`isReady` already guarantees that).
     private func makeInstruction(
         for issue: CompositionEvaluation.Issue?,
         evaluation: CompositionEvaluation
     ) -> String? {
 
         // Ready wins when there is no outstanding issue. Binding with `guard
-        // let` narrows the optional so the switch below is over a non-optional
-        // and exhaustiveness is checked properly.
+        // let` narrows the optional so the call below is over a non-optional.
         guard let issue else {
-            return announcedReady ? "Ready to capture" : nil
+            return announcedReady ? GuidanceWording.ready : nil
         }
+        return GuidanceWording.instruction(for: issue, horizontal: announcedHorizontal, vertical: announcedVertical)
+    }
 
-        switch issue {
-        case .noSubject:
-            return "No subject detected"
-        case .subjectLost:
-            return "Subject lost — reframe on the subject"
-        case .subjectClipped:
-            return "Subject is cut off — pull back to fit the whole subject"
-        case .subjectTooLarge:
-            return "Subject is larger than your usual framing — move back"
-        case .subjectTooSmall:
-            return "Subject is smaller than your usual framing — move closer"
-        case .subjectOffCentreHorizontally:
-            return "Move to shift the subject toward your usual position"
-        case .subjectOffCentreVertically:
-            return "Adjust framing to match your usual subject height"
+    /// The "why" line for whatever `currentInstruction` is showing.
+    private func makeDetail() -> String? {
+        guard let issue = announcedIssue else {
+            return announcedReady ? GuidanceWording.readyDetail(applied: lastApplied) : nil
         }
+        return GuidanceWording.reason(for: issue, horizontal: announcedHorizontal, vertical: announcedVertical)
     }
 }
