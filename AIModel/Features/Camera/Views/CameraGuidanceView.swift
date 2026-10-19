@@ -50,7 +50,9 @@ struct CameraGuidanceView: View {
         .onDisappear { viewModel.stop() }
         .sheet(isPresented: capturedPhotoPresented) {
             CapturedPhotoView(
-                image: viewModel.capturedImage,
+                originalImage: viewModel.capturedImage,
+                enhancedImage: viewModel.enhancedImage,
+                isEnhancing: viewModel.isEnhancing,
                 saveError: viewModel.saveErrorMessage,
                 onRetake: { viewModel.dismissCapturedPhoto() },
                 onSave: { viewModel.saveCapturedPhoto() }
