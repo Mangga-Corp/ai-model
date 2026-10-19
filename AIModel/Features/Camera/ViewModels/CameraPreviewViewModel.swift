@@ -39,6 +39,11 @@ final class CameraPreviewViewModel: ObservableObject {
     @Published private(set) var showCaptureFlash = false
     /// The most recently captured photo.
     @Published private(set) var capturedImage: UIImage?
+    /// The AI-enhanced version of `capturedImage`, once `PhotoEnhancer` has
+    /// finished. Nil while enhancing, or if the enhance failed.
+    @Published private(set) var enhancedImage: UIImage?
+    /// True while the captured photo is being enhanced.
+    @Published private(set) var isEnhancing = false
     /// Set when saving to the library fails, so the preview can show why.
     @Published private(set) var saveErrorMessage: String?
 
@@ -178,6 +183,10 @@ final class CameraPreviewViewModel: ObservableObject {
     /// One Core Image context for every capture. Creating a context per frame
     /// is expensive and was the old behaviour.
     private static let ciContext = CIContext()
+
+    /// Runs the automatic enhance on each capture.
+    private let enhancer = PhotoEnhancer()
+    private var enhanceTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -370,6 +379,7 @@ final class CameraPreviewViewModel: ObservableObject {
     /// Shows the captured photo and flashes the screen.
     func didCapture(image: UIImage?) {
         capturedImage = image
+        startEnhancing(image)
         showCaptureFlash = true
 
         Task {
@@ -381,17 +391,51 @@ final class CameraPreviewViewModel: ObservableObject {
     /// Clears the captured photo, closing the preview and returning to the
     /// live viewfinder. Used by both Retake and swipe-to-dismiss.
     func dismissCapturedPhoto() {
+        enhanceTask?.cancel()
+        enhanceTask = nil
         capturedImage = nil
+        enhancedImage = nil
+        isEnhancing = false
         saveErrorMessage = nil
     }
 
-    /// Writes the captured photo to the system photo library.
+    /// The version Save writes: the enhanced photo, or the original if the
+    /// enhance failed. Enhance is always applied; the original is only shown
+    /// while the user holds the compare button.
+    var displayedCapturedImage: UIImage? {
+        enhancedImage ?? capturedImage
+    }
+
+    /// Enhances the captured photo off the main actor. A newer capture or a
+    /// dismissal cancels it, so a stale result never replaces a newer photo.
+    private func startEnhancing(_ image: UIImage?) {
+        enhanceTask?.cancel()
+        enhancedImage = nil
+        guard let image else {
+            isEnhancing = false
+            return
+        }
+
+        isEnhancing = true
+        let enhancer = self.enhancer
+        enhanceTask = Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                enhancer.enhance(image)
+            }.value
+            guard !Task.isCancelled else { return }
+            enhancedImage = result
+            isEnhancing = false
+        }
+    }
+
+    /// Writes the enhanced photo (or the original, if the enhance failed) to
+    /// the system photo library.
     ///
     /// Triggers the one-time permission prompt on first save. On success the
     /// preview closes; on denial the caller is told so it can surface a message
     /// rather than silently doing nothing.
     func saveCapturedPhoto() {
-        guard let image = capturedImage else { return }
+        guard let image = displayedCapturedImage else { return }
 
         let write: () -> Void = {
             UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
@@ -400,14 +444,14 @@ final class CameraPreviewViewModel: ObservableObject {
         switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
         case .authorized, .limited:
             write()
-            capturedImage = nil
+            dismissCapturedPhoto()
 
         case .notDetermined:
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { newStatus in
                 Task { @MainActor in
                     if newStatus == .authorized || newStatus == .limited {
                         write()
-                        self.capturedImage = nil
+                        self.dismissCapturedPhoto()
                     } else {
                         self.saveErrorMessage = "Photo access denied. Enable it in Settings to save."
                     }
