@@ -8,7 +8,11 @@ import Vision
 /// On-device "AI enhance" for a captured photo.
 ///
 /// Built from Core Image filters steered by Vision, so it needs no extra model
-/// download and runs in well under a second on a captured video frame:
+/// download and runs in well under a second on a captured video frame. How
+/// strong each step is gets decided per photo: `PhotoStatistics` measures the
+/// capture (brightness, contrast, saturation, colour cast, noise, faces) and
+/// `EnhanceTuner` turns those measurements into `Settings`.
+///
 ///
 ///   1. **Auto adjust** — Core Image's own analysis picks exposure, tone curve,
 ///      vibrance and shadow/highlight corrections for THIS image (the same
@@ -31,8 +35,8 @@ import Vision
 /// step here only re-tones pixels that were actually captured.
 nonisolated struct PhotoEnhancer: Sendable {
 
-    /// Strengths of each step. Defaults are tuned to approximate the reference
-    /// "enhanced" look while staying natural on faces.
+    /// Strengths of each step. The defaults are the original hand-tuned look;
+    /// by default `EnhanceTuner` replaces them per photo from its statistics.
     struct Settings: Sendable, Equatable {
         /// Overall strength: how much of the enhanced result is mixed over the
         /// original (0 = original, 1 = full enhance). Auto adjust reacts to
@@ -55,7 +59,16 @@ nonisolated struct PhotoEnhancer: Sendable {
         var vignette: Float = 0.35
     }
 
-    var settings = Settings()
+    /// Fixed strengths for every photo, or nil (the default) to tune them per
+    /// photo from its measured statistics via `EnhanceTuner`.
+    var fixedSettings: Settings?
+
+    /// The strengths for the photo being rendered. Set inside `enhance(_:)`.
+    private var settings = Settings()
+
+    init(settings: Settings? = nil) {
+        self.fixedSettings = settings
+    }
 
     /// One context for every render. Creating a context per call is expensive;
     /// `CIContext` is safe to use from multiple threads.
@@ -67,9 +80,18 @@ nonisolated struct PhotoEnhancer: Sendable {
     func enhance(_ image: UIImage) -> UIImage? {
         guard let cgImage = image.cgImage else { return nil }
         let input = CIImage(cgImage: cgImage)
-        let extent = input.extent
         let faces = Self.detectFaces(in: cgImage)
 
+        // Measured on the ORIGINAL, before any step runs, so the numbers
+        // describe what the camera captured rather than an earlier step's output.
+        var renderer = self
+        renderer.settings = fixedSettings ?? EnhanceTuner.settings(
+            for: PhotoStatistics.measure(input, faces: faces, context: Self.context))
+        return renderer.render(input, faces: faces, image: image)
+    }
+
+    private func render(_ input: CIImage, faces: [VNFaceObservation], image: UIImage) -> UIImage? {
+        let extent = input.extent
         var output = autoAdjusted(input)
         output = warmed(output)
         output = clarified(output, extent: extent)
