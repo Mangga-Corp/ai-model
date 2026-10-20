@@ -14,6 +14,8 @@ nonisolated struct PhotoSource: @unchecked Sendable {
     let selectionOrder: Int
     let localIdentifier: String
     let image: UIImage?
+    /// 35 mm-equivalent focal length from the photo's EXIF, when known.
+    let focalLength35mm: Double?
 
     @MainActor
     init(_ reference: ReferencePhoto) {
@@ -21,13 +23,16 @@ nonisolated struct PhotoSource: @unchecked Sendable {
         self.selectionOrder = reference.selectionOrder
         self.localIdentifier = reference.localIdentifier
         self.image = reference.image
+        self.focalLength35mm = reference.focalLength35mm
     }
 
-    init(id: UUID, selectionOrder: Int, localIdentifier: String = "", image: UIImage?) {
+    init(id: UUID, selectionOrder: Int, localIdentifier: String = "", image: UIImage?,
+         focalLength35mm: Double? = nil) {
         self.id = id
         self.selectionOrder = selectionOrder
         self.localIdentifier = localIdentifier
         self.image = image
+        self.focalLength35mm = focalLength35mm
     }
 }
 
@@ -79,12 +84,13 @@ nonisolated enum PhotoPreparer {
         }
         guard let output = rendered.cgImage else { return unreadable("The photo could not be resized for analysis.") }
 
-        let record = ImagePreparationRecord(
+        var record = ImagePreparationRecord(
             originalPixelWidth: cg.width, originalPixelHeight: cg.height,
             orientationRaw: orientation.rawValue,
             uprightWidth: uprightW, uprightHeight: uprightH,
             preparedWidth: output.width, preparedHeight: output.height,
             longEdgeLimit: longEdge)
+        record.focalLength35mm = source.focalLength35mm
         return PreparedPhoto(id: source.id, selectionOrder: source.selectionOrder,
                              localIdentifier: source.localIdentifier,
                              outcome: .ready(image: output, record: record))

@@ -128,6 +128,20 @@ nonisolated struct DepthProfileMetrics: Sendable, Equatable {
     let fractionEnvironmentFarther: NumericSummary?
 }
 
+/// How the camera was held across the reference photos, beyond the angle category: the
+/// camera's height against the body, the horizon's sideways tilt, and the estimated angles.
+/// Each finding follows the same recurrence rules as every other finding.
+nonisolated struct ViewpointProfile: Sendable, Equatable {
+    let heightLevel: CategoryFinding<CameraHeightLevel>
+    let dutchAngle: CategoryFinding<DutchAngleCategory>
+    /// Estimated camera elevation relative to the eyes, degrees (camera above positive).
+    let elevation: NumericSummary?
+    /// Estimated camera pitch, degrees (positive = tilted DOWN).
+    let pitchDown: NumericSummary?
+    /// Vision's horizon roll, degrees.
+    let roll: NumericSummary?
+}
+
 // MARK: - Coverage
 
 /// How many photos could be assessed for a characteristic, and why the rest could not.
@@ -174,6 +188,9 @@ nonisolated struct PreferenceProfile: Sendable, Equatable {
     /// Object and environment tendencies, kept apart from the four characteristics
     /// above so existing readers (including the camera hand-off) are unaffected.
     var environment: EnvironmentProfile?
+
+    /// Camera height, horizon tilt and angle estimates. Nil for profiles built by hand.
+    var viewpoint: ViewpointProfile? = nil
 
     var isEmpty: Bool { photosWithValidEvidenceCount == 0 }
 }

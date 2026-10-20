@@ -41,8 +41,28 @@ struct ProfileDetailView: View {
                     FindingSection(title: CharacteristicKind.cameraAngle.title,
                                    systemImage: CharacteristicKind.cameraAngle.systemImage,
                                    finding: profile.cameraAngle, coverage: profile.coverage[.cameraAngle],
-                                   order: [.lowAngle, .eyeLevel, .highAngle],
+                                   order: Array(CameraAngleRule.ordered.reversed()),
                                    label: { $0.label }, thumbnail: thumb)
+                }
+
+                if let viewpoint = profile.viewpoint {
+                    ResultCard {
+                        VStack(alignment: .leading, spacing: 16) {
+                            FindingSection(title: "Camera height", systemImage: "arrow.up.and.down",
+                                           finding: viewpoint.heightLevel, coverage: nil,
+                                           order: CameraHeightLevel.ordered,
+                                           label: { $0.label }, thumbnail: thumb, showCoverage: false)
+                            FindingSection(title: "Horizon", systemImage: "level",
+                                           finding: viewpoint.dutchAngle, coverage: nil,
+                                           order: [.level, .slightTilt, .dutch],
+                                           label: { $0.label }, thumbnail: thumb, showCoverage: false)
+                            if let pitch = viewpoint.pitchDown, pitch.count >= 2 {
+                                Text(String(format: "Phone tilt across %ld photos: typically %.0f° %@ (estimated, typical phone lens).",
+                                            pitch.count, abs(pitch.median), pitch.median >= 0 ? "down" : "up"))
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
 
                 ResultCard {

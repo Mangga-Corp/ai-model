@@ -21,7 +21,8 @@ nonisolated enum HorizonProvider {
                         segmentationProblem: String?,
                         imageRollDegrees: Double?,
                         aspect: Double,
-                        imageSize: CGSize?) -> (observation: CameraAngleObservation, cue: HorizonEyeCue?) {
+                        imageSize: CGSize?,
+                        lens: LensAssumption = .unknown) -> (observation: CameraAngleObservation, cue: HorizonEyeCue?) {
 
         guard let segmentation else {
             return (.unavailable(.horizonLine, .decisive,
@@ -42,10 +43,10 @@ nonisolated enum HorizonProvider {
         let eyeY = Double(anchor.eyePoint.y)
         let horizonY = horizon.y(atX: Double(anchor.eyePoint.x))
 
-        let elevation = LensModel.interval(aspect: aspect) { f in
+        let elevation = LensModel.interval(aspect: aspect, lens: lens) { f in
             [CameraGeometry.elevation(pitchDownDegrees: CameraGeometry.pitchDown(horizonY: horizonY, f: f), eyeY: eyeY, f: f)]
         }
-        let pitch = LensModel.interval(aspect: aspect) { f in [CameraGeometry.pitchDown(horizonY: horizonY, f: f)] }
+        let pitch = LensModel.interval(aspect: aspect, lens: lens) { f in [CameraGeometry.pitchDown(horizonY: horizonY, f: f)] }
 
         // Quality from explicit checks.
         var quality: EvidenceQuality = .high

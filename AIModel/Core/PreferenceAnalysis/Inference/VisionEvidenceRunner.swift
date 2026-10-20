@@ -9,6 +9,7 @@ nonisolated struct VisionEvidenceBundle: Sendable {
     var faces: EvidenceOutcome<[FaceCandidate]>
     var imageRoll: EvidenceOutcome<ImageRollEvidence>
     var records: [SourceRunRecord]
+    var bodyPose3D: EvidenceOutcome<[BodyPose3DCandidate]> = .skipped("not run")
 }
 
 /// Stage B/C for Apple Vision: runs the requests and converts their raw
@@ -23,12 +24,15 @@ nonisolated enum VisionEvidenceRunner {
         async let pose = timed(.visionBodyPose) { await detectPose(in: image) }
         async let faces = timed(.visionFaceRectangles) { await detectFaces(in: image) }
         async let roll = timed(.visionHorizon) { await detectImageRoll(in: image) }
+        async let pose3D = timed(.visionBodyPose3D) { BodyPose3DRunner.detect(in: image) }
 
         let (h, hr) = await humans
         let (p, pr) = await pose
         let (f, fr) = await faces
         let (r, rr) = await roll
-        return VisionEvidenceBundle(humans: h, pose: p, faces: f, imageRoll: r, records: [hr, pr, fr, rr])
+        let (p3, p3r) = await pose3D
+        return VisionEvidenceBundle(humans: h, pose: p, faces: f, imageRoll: r,
+                                    records: [hr, pr, fr, rr, p3r], bodyPose3D: p3)
     }
 
     // MARK: Humans

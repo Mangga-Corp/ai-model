@@ -41,13 +41,15 @@ nonisolated enum LensModel {
 
     /// Evaluates `value` over the lens ranges. `value(f)` returns the nominal-case
     /// quantity first, followed by any extra variants (for example pitch error bars).
-    static func interval(aspect: Double, value: (_ f: Double) -> [Double]) -> AngleInterval {
+    /// `lens` narrows the ranges when the photo's metadata states the focal length.
+    static func interval(aspect: Double, lens: LensAssumption = .unknown,
+                         value: (_ f: Double) -> [Double]) -> AngleInterval {
         func span(_ mms: [Double]) -> (Double, Double) {
             let all = mms.flatMap { value(focalLength(equivalentMM: $0, aspect: aspect)) }
             return (all.min() ?? 0, all.max() ?? 0)
         }
-        let nominal = value(focalLength(equivalentMM: nominalMM, aspect: aspect)).first ?? 0
-        let likely = span(likelyMM), extended = span(extendedMM)
+        let nominal = value(focalLength(equivalentMM: lens.nominalMM, aspect: aspect)).first ?? 0
+        let likely = span(lens.likelyMM), extended = span(lens.extendedMM)
         return AngleInterval(nominal: nominal, likelyLow: likely.0, likelyHigh: likely.1,
                              extendedLow: extended.0, extendedHigh: extended.1)
     }
@@ -76,6 +78,34 @@ nonisolated enum LensModel {
         if abs(r - 16.0 / 9.0) < 0.05 { return 0.15 }
         return 0.20
     }
+}
+
+/// The lenses a photo may have been taken with, in 35 mm-equivalent millimetres.
+///
+/// `unknown` is the documented phone-lens assumption above. When the photo's EXIF
+/// states its 35 mm-equivalent focal length, the ranges collapse around it:
+/// EXIF rounds to whole millimetres (a few percent), and a crop after capture can
+/// only LENGTHEN the effective lens, so the extended range reaches 1.6x for crops.
+nonisolated struct LensAssumption: Sendable, Equatable {
+    let nominalMM: Double
+    let likelyMM: [Double]
+    let extendedMM: [Double]
+    /// The focal length read from the photo, when it was.
+    let knownMM: Double?
+
+    static let unknown = LensAssumption(nominalMM: LensModel.nominalMM, likelyMM: LensModel.likelyMM,
+                                        extendedMM: LensModel.extendedMM, knownMM: nil)
+
+    /// Plausible 35 mm-equivalent focal lengths. Anything else is treated as unknown.
+    static let plausibleMM = 10.0...600.0
+
+    static func from(equivalentMM mm: Double?) -> LensAssumption {
+        guard let mm, mm.isFinite, plausibleMM.contains(mm) else { return .unknown }
+        return LensAssumption(nominalMM: mm, likelyMM: [mm * 0.97, mm, mm * 1.05],
+                              extendedMM: [mm * 0.95, mm, mm * 1.6], knownMM: mm)
+    }
+
+    var isKnown: Bool { knownMM != nil }
 }
 
 /// Geometry shared by the decisive providers. Angles in degrees.

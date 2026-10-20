@@ -98,6 +98,10 @@ struct PhotographicPreferenceProfile: Identifiable, Hashable {
     /// behaves exactly as it did before this field existed. It is a value on the profile, so it
     /// is replaced together with it and can never outlive it.
     var livePreferences: LiveCompositionPreferences? = nil
+
+    /// Camera-angle, camera-height, pitch and horizon habits for the live camera's
+    /// "match my photos" targets. Nil for legacy profiles: those targets are then unavailable.
+    var viewpointPreferences: LiveViewpointPreferences? = nil
 }
 
 // MARK: - Distribution Types
