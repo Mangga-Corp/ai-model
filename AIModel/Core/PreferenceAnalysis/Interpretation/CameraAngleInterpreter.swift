@@ -23,11 +23,15 @@ import CoreGraphics
 ///                                               depth. Can contradict, never decide.
 ///  Vision horizon (image roll)    context       Image tilt. NOT camera elevation.
 ///  FastViT labels                 not used      Generic ImageNet labels say nothing about angle.
+///  3D body pose (Vision)          decisive      Camera position against the reconstructed body.
+///  Viewpoint model (own Core ML)  decisive      Camera pitch and lens from the whole picture,
+///                                               with the model's own uncertainty. Optional:
+///                                               skipped when CameraCalibration is not bundled.
 ///
 ///  Cannot be determined from this pipeline: camera angle in plain-background
 ///  portraits, close-ups, or any photo without a horizon AND without vertical
 ///  structure; the exact angle in degrees; angles for long-lens photos. These
-///  return unknown. A dedicated viewpoint model would be needed to go further.
+///  return unknown unless the viewpoint model (above) can read the camera tilt.
 ///
 /// Absence of any single provider (including the horizon) is never a reason
 /// for unknown by itself.
@@ -81,8 +85,12 @@ nonisolated enum CameraAngleInterpreter {
         let head = HeadOrientationProvider.observe(face: face)
         let depth = DepthTiltProvider.observe(primary: primary, segmentation: artifacts.segmentation, depth: artifacts.depth)
         let body3D = BodyPose3DProvider.observe(poses: evidence.bodyPose3D, subjectBox: primary.box)
+        let viewpoint = CalibrationModelProvider.observe(
+            calibration: evidence.cameraCalibration, anchor: subject.anchor, aspect: aspect,
+            cropAllowance: LensModel.verticalCropAllowance(aspect: aspect), lens: lens)
 
-        let observations = [horizon.observation, scene.observation, body3D.observation, subject.observation, head, depth]
+        let observations = [horizon.observation, scene.observation, body3D.observation, viewpoint.observation,
+                            subject.observation, head, depth]
         let fused = CameraAngleFusion.fuse(observations, anchor: subject.anchor)
 
         var references = observations.map { reference(for: $0, used: fused.decision.contributing.contains($0.provider)) }
@@ -130,7 +138,8 @@ nonisolated enum CameraAngleInterpreter {
         output.elevationDegrees = elevation
         output.pitchDownDegrees = pitchDown
         output.heightLevel = heightLevel
-        output.dutchAngle = DutchAngleRule.category(rollDegrees: roll)
+        // Vision's horizon measures the image roll directly; the model's roll fills in without it.
+        output.dutchAngle = DutchAngleRule.category(rollDegrees: roll ?? viewpoint.rollDegrees)
         return output
     }
 
@@ -169,6 +178,7 @@ nonisolated enum CameraAngleInterpreter {
         case .headOrientation: source = .visionFaceRectangles
         case .depthTilt: source = .depthAnything
         case .bodyPose3D: source = .visionBodyPose3D
+        case .viewpointModel: source = .cameraCalibration
         }
         let role: EvidenceRole
         if !o.validity.isValid { role = .limiting }
@@ -184,6 +194,7 @@ nonisolated enum CameraAngleInterpreter {
         case .headOrientation: label = "Head orientation (not camera position)"
         case .depthTilt: label = "Relative depth, head vs lower body"
         case .bodyPose3D: label = "3D body pose (camera position)"
+        case .viewpointModel: label = "Viewpoint model (camera tilt and lens)"
         }
         let detail = o.validity.isValid
             ? ([o.summary] + o.measurements.map { "\($0.label): \($0.value)" }).joined(separator: " | ")
