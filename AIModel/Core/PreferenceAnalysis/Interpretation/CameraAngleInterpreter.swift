@@ -36,7 +36,8 @@ nonisolated enum CameraAngleInterpreter {
     static func interpret(selection: SubjectSelection,
                           evidence: PhotoEvidence,
                           artifacts: PhotoArtifacts,
-                          imageSize: CGSize?) -> CameraAngleResult {
+                          imageSize: CGSize?,
+                          focalLength35mm: Double? = nil) -> CameraAngleResult {
 
         let roll = evidence.imageRoll.value?.angleDegrees
 
@@ -65,24 +66,31 @@ nonisolated enum CameraAngleInterpreter {
         let face = evidence.faces.value.flatMap { SubjectAssociation.face(for: primary.box, among: $0) }
         let pose = evidence.pose.value.flatMap { SubjectAssociation.pose(for: primary.box, among: $0) }
         let aspect = LensModel.aspect(of: imageSize)
+        let lens = LensAssumption.from(equivalentMM: focalLength35mm)
 
         // Independent providers. None sees another's output.
         let subject = SubjectGeometryProvider.observe(pose: pose, face: face)
         let horizon = HorizonProvider.observe(
             anchor: subject.anchor, segmentation: artifacts.segmentation,
             segmentationProblem: evidence.segmentation.problem, imageRollDegrees: roll,
-            aspect: aspect, imageSize: imageSize)
+            aspect: aspect, imageSize: imageSize, lens: lens)
         let scene = SceneVerticalsProvider.observe(
             lines: evidence.verticalLines, segmentation: artifacts.segmentation,
             segmentationProblem: evidence.segmentation.problem, anchor: subject.anchor,
-            aspect: aspect, cropAllowance: LensModel.verticalCropAllowance(aspect: aspect))
+            aspect: aspect, cropAllowance: LensModel.verticalCropAllowance(aspect: aspect), lens: lens)
         let head = HeadOrientationProvider.observe(face: face)
         let depth = DepthTiltProvider.observe(primary: primary, segmentation: artifacts.segmentation, depth: artifacts.depth)
+        let body3D = BodyPose3DProvider.observe(poses: evidence.bodyPose3D, subjectBox: primary.box)
 
-        let observations = [horizon.observation, scene.observation, subject.observation, head, depth]
+        let observations = [horizon.observation, scene.observation, body3D.observation, subject.observation, head, depth]
         let fused = CameraAngleFusion.fuse(observations, anchor: subject.anchor)
 
         var references = observations.map { reference(for: $0, used: fused.decision.contributing.contains($0.provider)) }
+        if let mm = lens.knownMM {
+            references.append(EvidenceReference(
+                source: nil, origin: .rawModelOutput, role: .supporting,
+                label: "Lens (photo metadata)", value: String(format: "%.0f mm equivalent", mm)))
+        }
         if let roll {
             references.append(EvidenceReference(
                 source: .visionHorizon, origin: .rawModelOutput, role: .contextual,
@@ -98,7 +106,17 @@ nonisolated enum CameraAngleInterpreter {
         let usedHorizon = fused.decision.contributing.contains(.horizonLine)
         let usedScene = fused.decision.contributing.contains(.sceneVerticals)
 
-        return CameraAngleResult(
+        // Viewpoint detail. Numbers only from providers that decided a determined category.
+        let deciding = fused.status == .determined
+            ? observations.filter { fused.decision.contributing.contains($0.provider) } : []
+        let elevation = mean(deciding.compactMap { $0.elevation?.nominal })
+        let pitchDown = mean(deciding.compactMap { $0.pitchDown?.nominal })
+        // 2D geometry first (it is a measurement of this image); the 3D reconstruction otherwise.
+        var heightLevel = Self.heightLevel(horizonCue: usedHorizon ? horizon.cue : nil,
+                                           pitchDown: pitchDown, pose: pose, aspect: aspect, lens: lens)
+        if heightLevel == .unknown, body3D.observation.validity.isValid { heightLevel = body3D.heightLevel }
+
+        var output = CameraAngleResult(
             category: fused.category,
             horizonCue: usedHorizon ? horizon.cue : nil,
             headPitchDegrees: face?.pitchDegrees,
@@ -109,6 +127,35 @@ nonisolated enum CameraAngleInterpreter {
             observations: observations,
             decision: fused.decision,
             sceneLines: usedScene ? scene.inliers : [])
+        output.elevationDegrees = elevation
+        output.pitchDownDegrees = pitchDown
+        output.heightLevel = heightLevel
+        output.dutchAngle = DutchAngleRule.category(rollDegrees: roll)
+        return output
+    }
+
+    // MARK: Viewpoint detail
+
+    private static func mean(_ values: [Double]) -> Double? {
+        values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
+    }
+
+    /// Camera height against the body: where the horizon line crosses the subject's joints.
+    /// A visible horizon is used directly (at the eyes' x); otherwise the horizon's height is
+    /// implied by the estimated pitch under the nominal lens. No pose, no answer.
+    private static func heightLevel(horizonCue: HorizonEyeCue?, pitchDown: Double?,
+                                    pose: PoseCandidate?, aspect: Double, lens: LensAssumption) -> CameraHeightLevel {
+        guard let pose else { return .unknown }
+        let horizonY: Double
+        if let cue = horizonCue {
+            horizonY = cue.horizon.y(atX: Double(cue.eyePoint.x))
+        } else if let pitchDown {
+            let f = LensModel.focalLength(equivalentMM: lens.nominalMM, aspect: aspect)
+            horizonY = 0.5 - f * tan(pitchDown * .pi / 180)
+        } else {
+            return .unknown
+        }
+        return CameraHeightLevelRule.level(horizonY: horizonY, joints: SubjectJointHeights(pose: pose))
     }
 
     // MARK: Evidence references
@@ -121,6 +168,7 @@ nonisolated enum CameraAngleInterpreter {
         case .subjectGeometry: source = .visionBodyPose
         case .headOrientation: source = .visionFaceRectangles
         case .depthTilt: source = .depthAnything
+        case .bodyPose3D: source = .visionBodyPose3D
         }
         let role: EvidenceRole
         if !o.validity.isValid { role = .limiting }
@@ -135,6 +183,7 @@ nonisolated enum CameraAngleInterpreter {
         case .subjectGeometry: label = "Subject eye line and posture"
         case .headOrientation: label = "Head orientation (not camera position)"
         case .depthTilt: label = "Relative depth, head vs lower body"
+        case .bodyPose3D: label = "3D body pose (camera position)"
         }
         let detail = o.validity.isValid
             ? ([o.summary] + o.measurements.map { "\($0.label): \($0.value)" }).joined(separator: " | ")

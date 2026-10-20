@@ -21,6 +21,10 @@ import CoreGraphics
 /// A distribution is flagged consistent only with two or more samples and a
 /// spread within the camera's tolerances (position 0.15, size 0.10).
 ///
+/// VIEWPOINT. `viewpointPreferences` carries the learned camera angle, camera height, pitch
+/// and horizon habits for the live "match my photos" targets. `horizonAngleDistribution`
+/// stays nil on purpose: it is image ROLL from the legacy pipeline and was never a pitch target.
+///
 /// LIVE PERSONALISATION. The same hand-off also carries `livePreferences`, adapted by
 /// `LiveCompositionPreferenceAdapter` from the profile's own evidence rules (coverage,
 /// evidence quality, recurrence, per-orientation comparison). It is the only input the live
@@ -76,7 +80,8 @@ enum CameraProfileBridge {
             summary: "", insights: [], analyses: [], photos: [], mixedPatterns: [],
             limitations: profile.limitations,
             generatedAt: profile.generatedAt,
-            livePreferences: LiveCompositionPreferenceAdapter.make(profile: profile, results: results))
+            livePreferences: LiveCompositionPreferenceAdapter.make(profile: profile, results: results),
+            viewpointPreferences: LiveViewpointPreferences.make(profile: profile))
     }
 
     private static func mean(_ v: [Double]) -> Double { v.reduce(0, +) / Double(max(1, v.count)) }

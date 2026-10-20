@@ -19,6 +19,8 @@ nonisolated enum CameraAngleProvider: String, Sendable, CaseIterable, Hashable, 
     case headOrientation
     /// Relative depth of head versus lower body. A weak cross-check on camera tilt.
     case depthTilt
+    /// Camera position reconstructed with the subject's 3D body pose (Vision, iOS 17+).
+    case bodyPose3D
 
     var id: String { rawValue }
 }
@@ -102,7 +104,7 @@ nonisolated struct CameraAngleObservation: Sendable, Equatable, Identifiable {
 
 /// What the fusion concluded and on what basis (kept next to the raw observations).
 nonisolated struct CameraAngleDecisionSummary: Sendable, Equatable {
-    /// Categories not ruled out by any valid decisive evidence. Three entries
+    /// Categories not ruled out by any valid decisive evidence. Every category
     /// means no information; one means determined; zero means the sources conflict.
     let possibleCategories: Set<CameraAngleCategory>
     /// Providers whose evidence actually influenced the result.
@@ -120,17 +122,39 @@ nonisolated enum CameraAngleRule {
     /// of the eye line, viewers read a shot as "eye level".
     static let eyeLevelBandDegrees = 6.0
 
+    /// Every real category, steepest-down view first. `unknown` is not one.
+    static let ordered: [CameraAngleCategory] = [.birdsEye, .highAngle, .eyeLevel, .lowAngle, .wormsEye]
+
     static func category(ofElevation degrees: Double) -> CameraAngleCategory {
-        degrees > eyeLevelBandDegrees ? .highAngle : (degrees < -eyeLevelBandDegrees ? .lowAngle : .eyeLevel)
+        if degrees > extremeAngleDegrees { return .birdsEye }
+        if degrees > eyeLevelBandDegrees { return .highAngle }
+        if degrees < -extremeAngleDegrees { return .wormsEye }
+        if degrees < -eyeLevelBandDegrees { return .lowAngle }
+        return .eyeLevel
     }
 
     /// Every category an elevation interval overlaps.
     static func categories(low: Double, high: Double) -> Set<CameraAngleCategory> {
         var set = Set<CameraAngleCategory>()
-        if high > eyeLevelBandDegrees { set.insert(.highAngle) }
-        if low < -eyeLevelBandDegrees { set.insert(.lowAngle) }
+        if high > extremeAngleDegrees { set.insert(.birdsEye) }
+        if high > eyeLevelBandDegrees && low <= extremeAngleDegrees { set.insert(.highAngle) }
         if high >= -eyeLevelBandDegrees && low <= eyeLevelBandDegrees { set.insert(.eyeLevel) }
+        if low < -eyeLevelBandDegrees && high >= -extremeAngleDegrees { set.insert(.lowAngle) }
+        if low < -extremeAngleDegrees { set.insert(.wormsEye) }
         return set
+    }
+
+    /// Elevation range (degrees, camera above the eyes positive) that counts as `category`.
+    /// Open ends are capped at ±90°. Nil for `unknown`.
+    static func elevationRange(of category: CameraAngleCategory) -> ClosedRange<Double>? {
+        switch category {
+        case .birdsEye:  return extremeAngleDegrees...90
+        case .highAngle: return eyeLevelBandDegrees...extremeAngleDegrees
+        case .eyeLevel:  return -eyeLevelBandDegrees...eyeLevelBandDegrees
+        case .lowAngle:  return -extremeAngleDegrees...(-eyeLevelBandDegrees)
+        case .wormsEye:  return -90...(-extremeAngleDegrees)
+        case .unknown:   return nil
+        }
     }
 }
 

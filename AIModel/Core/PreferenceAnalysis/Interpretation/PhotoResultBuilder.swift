@@ -15,7 +15,8 @@ nonisolated enum PhotoResultBuilder {
         let imageSize = record?.preparedSize
 
         let angle = CameraAngleInterpreter.interpret(selection: selection, evidence: evidence,
-                                                     artifacts: artifacts, imageSize: imageSize)
+                                                     artifacts: artifacts, imageSize: imageSize,
+                                                     focalLength35mm: record?.focalLength35mm)
         let framing = SubjectFramingInterpreter.interpret(selection: selection, evidence: evidence)
         let positioning = SubjectPositioningMeasurer.measure(selection: selection, evidence: evidence)
         let depth = EnvironmentalDepthInterpreter.interpret(selection: selection, evidence: evidence,

@@ -19,7 +19,10 @@ import Combine
 ///   `SceneUnderstandingSampler` + `SceneRulebook`.
 /// - **Objects** (same scene sample, no extra model): individual cars, tables,
 ///   people… with labels and masks, and object-based advice via `ObjectRulebook`.
-/// - **Tilt** (Core Motion): device pitch versus the profile's horizon angle.
+/// - **Viewpoint** (Core Motion + lens + body pose, a few times a second): camera
+///   angle (bird's eye … worm's eye), camera height against the body, phone pitch
+///   and horizon, versus the targets the user switched on (`ViewpointGuidanceSettings`),
+///   via `LiveViewpointMeasurer` + `ViewpointEvaluator`. Both switches off = no change.
 ///
 /// It also steers the lens: once a subject is detected, focus and exposure
 /// follow the subject's face area (`SubjectFocusTracker` +
@@ -79,13 +82,22 @@ final class CameraPreviewViewModel: ObservableObject {
     /// Where the dashed guide is drawn (frame space), or nil when there is no target to show.
     @Published private(set) var guideTarget: LiveGuideTarget?
 
-    /// Live tilt instruction derived from the device's physical pitch versus the
-    /// profile's preferred horizon angle, or nil when on target / unavailable.
-    @Published private(set) var tiltInstruction: String?
+    /// The camera-angle / tilt instruction, readout and limitation, after a short stability
+    /// window. `.silent` while both viewpoint switches are off.
+    @Published private(set) var viewpointGuidance: ViewpointGuidance = .silent
 
-    /// True when Core Motion is producing attitude samples. False means tilt
-    /// guidance is unavailable and the banner falls back to position-only.
+    /// True when Core Motion is producing attitude samples. False means angle and
+    /// tilt cannot be measured and only position guidance is offered.
     @Published private(set) var isAttitudeActive = false
+
+    /// The most recent measured viewpoint, or nil when it cannot be measured.
+    private(set) var latestViewpoint: LiveViewpoint?
+
+    /// True when no viewpoint switch is on, or every enabled viewpoint target is met.
+    /// The "ready" check mark waits for this as well as for the composition.
+    var isViewpointSatisfied: Bool {
+        !viewpointSettings.isAnyGuidanceEnabled || viewpointGuidance.instruction == nil
+    }
 
     // MARK: - Published state: focus
 
@@ -124,7 +136,19 @@ final class CameraPreviewViewModel: ObservableObject {
     /// Injected rather than read from a singleton so the camera can be opened
     /// with no profile at all, in which case no guidance is offered.
     var profile: PhotographicPreferenceProfile? {
-        didSet { refreshGuideTarget() }
+        didSet {
+            refreshGuideTarget()
+            refreshViewpoint()
+        }
+    }
+
+    /// Which viewpoint targets are switched on. Set by the view from the user's settings.
+    var viewpointSettings = ViewpointGuidanceSettings() {
+        didSet {
+            guard viewpointSettings != oldValue else { return }
+            viewpointFilter.reset()
+            refreshViewpoint()
+        }
     }
 
     // MARK: - Guidance engines
@@ -136,7 +160,22 @@ final class CameraPreviewViewModel: ObservableObject {
     /// Mismatches flagged on the previous pass, for spatial hysteresis.
     private var latchedMismatches: ActiveMismatches = []
     private let attitudeService = DeviceAttitudeService()
-    private let tiltEvaluator = TiltEvaluator()
+
+    // MARK: - Viewpoint
+
+    private var latestAttitude: DeviceAttitude?
+    /// The guided subject's pose and when its frame arrived (`systemUptime`).
+    private var latestPose: (pose: LivePose, at: TimeInterval)?
+    private var poseInFlight = false
+    private var lastPoseRequest: TimeInterval = 0
+    /// Body pose is sampled at most this often: the viewpoint changes slowly.
+    private static let poseInterval: TimeInterval = 0.25
+    /// A pose older than this no longer describes the subject.
+    private static let poseMaxAge: TimeInterval = 1.0
+    /// Active format field of view along the sensor's long side, degrees.
+    private var lensFieldOfView: Double?
+    private var lensZoomFactor = 1.0
+    private var viewpointFilter = StableValueFilter<String>()
 
     // MARK: - Focus
 
@@ -325,7 +364,13 @@ final class CameraPreviewViewModel: ObservableObject {
             session.commitConfiguration()
             session.startRunning()
 
+            // Read once the session runs, when the preset's format is active.
+            let fieldOfView = Double(device.activeFormat.videoFieldOfView)
+            let zoomFactor = Double(device.videoZoomFactor)
+
             Task { @MainActor in
+                lensFieldOfView = fieldOfView
+                lensZoomFactor = zoomFactor
                 if !session.isRunning {
                     statusMessage = "Camera failed to start"
                     isSessionRunning = false
@@ -355,6 +400,7 @@ final class CameraPreviewViewModel: ObservableObject {
             return
         }
 
+        recordViewpointIfEnabled(image: image)
         didCapture(image: image)
     }
 
@@ -488,6 +534,7 @@ final class CameraPreviewViewModel: ObservableObject {
         let capturedAt = ProcessInfo.processInfo.systemUptime
 
         offerSceneUnderstanding(pixelBuffer)
+        offerPose(pixelBuffer, capturedAt: capturedAt)
 
         Task {
             let found = await detector.detectAll(in: pixelBuffer)
@@ -733,40 +780,105 @@ final class CameraPreviewViewModel: ObservableObject {
         focusController?.releaseToAuto()
     }
 
-    // MARK: - Attitude
+    // MARK: - Attitude & viewpoint
 
-    /// Starts streaming device attitude and feeds it to the tilt evaluator.
+    /// Starts streaming device attitude, which drives the viewpoint check.
     ///
     /// Safe to call more than once — the second call is a no-op while a stream
-    /// is already active. Called from `onAppear` once the profile is set, since
-    /// the tilt target is derived from it.
+    /// is already active. Needs no profile: fixed targets (for example "eye
+    /// level") work without one; only "match my photos" targets read the profile.
     ///
-    /// Attitude arrives on a background queue; the evaluator is pure and the
-    /// published property is @MainActor-observed, so the result hops to main.
+    /// Attitude arrives on a background queue and hops to the main actor.
     func startAttitudeIfPossible() {
         guard !attitudeService.isActive else { return }
         startAttitude()
     }
 
     private func startAttitude() {
-        guard let profile else {
-            isAttitudeActive = false
+        let started = attitudeService.start { [weak self] attitude in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAttitudeActive = true
+                self.latestAttitude = attitude
+                self.refreshViewpoint()
+            }
+        }
+        isAttitudeActive = started
+        if !started { refreshViewpoint() }
+    }
+
+    /// Runs body pose on a frame, at most every `poseInterval`, and only when something
+    /// uses it (the angle check or capture recording). Tilt alone needs no pose.
+    private func offerPose(_ pixelBuffer: CVPixelBuffer, capturedAt: TimeInterval) {
+        let settings = viewpointSettings
+        guard settings.angleEnabled || settings.recordCaptureData, !poseInFlight,
+              capturedAt - lastPoseRequest >= Self.poseInterval else { return }
+        poseInFlight = true
+        lastPoseRequest = capturedAt
+
+        Task {
+            let poses = await LivePoseDetector.detect(in: pixelBuffer)
+            poseInFlight = false
+            latestPose = LivePose.match(poses, to: subjectBox).map { (pose: $0, at: capturedAt) }
+            refreshViewpoint()
+        }
+    }
+
+    /// Measures the viewpoint from the latest attitude, lens and pose, and publishes the
+    /// guidance. Internal so the flow can be tested without sensors.
+    func refreshViewpoint(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let settings = viewpointSettings
+        guard settings.isAnyGuidanceEnabled || settings.recordCaptureData else {
+            latestViewpoint = nil
+            if viewpointGuidance != .silent { viewpointGuidance = .silent }
             return
         }
 
-        let started = attitudeService.start { [weak self] attitude in
-            guard let self else { return }
-            let preferred = profile.horizonAngleDistribution?.meanAngle
-            let guidance = self.tiltEvaluator.evaluate(pitch: attitude.pitch, preferredAngle: preferred)
-            let instruction = self.tiltEvaluator.instruction(for: guidance)
+        let viewpoint = currentViewpoint(now: now)
+        latestViewpoint = viewpoint
 
-            Task { @MainActor in
-                self.isAttitudeActive = true
-                self.tiltInstruction = instruction
-            }
+        let raw = ViewpointEvaluator.evaluate(viewpoint, settings: settings,
+                                              preferences: profile?.viewpointPreferences)
+        // Same idea as the composition banner: an instruction must hold for a few samples.
+        let stable = viewpointFilter.update(raw.instruction)
+        let shown = ViewpointGuidance(
+            instruction: stable,
+            detail: stable == raw.instruction ? raw.detail : nil,
+            isOnTarget: stable == nil && raw.isOnTarget,
+            readout: raw.readout,
+            limitation: stable == nil ? raw.limitation : nil)
+        if shown != viewpointGuidance { viewpointGuidance = shown }
+    }
+
+    /// Records the injected attitude as if Core Motion had delivered it. For tests.
+    func injectAttitude(_ attitude: DeviceAttitude, fieldOfView: Double = 70, zoomFactor: Double = 1) {
+        latestAttitude = attitude
+        lensFieldOfView = fieldOfView
+        lensZoomFactor = zoomFactor
+        refreshViewpoint()
+    }
+
+    private func currentViewpoint(now: TimeInterval) -> LiveViewpoint? {
+        guard let attitude = latestAttitude, let frameSize, let fieldOfView = lensFieldOfView,
+              let f = LiveViewpointMeasurer.focalLength(horizontalFOVDegrees: fieldOfView,
+                                                        zoomFactor: lensZoomFactor, frameSize: frameSize)
+        else { return nil }
+        let pose = latestPose.flatMap { now - $0.at <= Self.poseMaxAge ? $0.pose : nil }
+        return LiveViewpointMeasurer.measure(attitude: attitude, focalLength: f,
+                                             joints: pose?.jointHeights, upperBodyBox: subjectBox)
+    }
+
+    /// Saves the capture's sensor readings and photo for future model training, when the
+    /// user turned that on. Uses the viewpoint measured for the frame being captured.
+    private func recordViewpointIfEnabled(image: UIImage) {
+        guard viewpointSettings.recordCaptureData, let viewpoint = latestViewpoint, let frameSize else { return }
+        let f = lensFieldOfView.flatMap {
+            LiveViewpointMeasurer.focalLength(horizontalFOVDegrees: $0, zoomFactor: lensZoomFactor, frameSize: frameSize)
         }
-
-        isAttitudeActive = started
+        let record = ViewpointCaptureRecorder.makeRecord(
+            viewpoint: viewpoint, joints: latestPose?.pose.jointHeights, subjectBox: subjectBox,
+            frameSize: frameSize, horizontalFOV: lensFieldOfView, zoomFactor: lensZoomFactor, focalLength: f)
+        ViewpointCaptureRecorder.save(record, image: image)
     }
 
     // MARK: - Reset
@@ -783,6 +895,11 @@ final class CameraPreviewViewModel: ObservableObject {
         sceneRecommendationFilter.reset()
         sceneCategory = nil
         detectedObjects = []
+
+        latestPose = nil
+        viewpointFilter.reset()
+        latestViewpoint = nil
+        if viewpointGuidance != .silent { viewpointGuidance = .silent }
     }
 
     // MARK: - Geometry & orientation

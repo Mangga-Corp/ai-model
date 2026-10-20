@@ -112,7 +112,7 @@ nonisolated enum ProfileAggregator {
         let analyzed = ordered.filter { $0.status != .failed }.count
         let withEvidence = ordered.filter(\.hasAnyDeterminedCharacteristic).count
 
-        return PreferenceProfile(
+        var profile = PreferenceProfile(
             generatedAt: generatedAt, totalPhotoCount: total, analyzedPhotoCount: analyzed,
             photosWithValidEvidenceCount: withEvidence,
             cameraAngle: angle, subjectFraming: framing,
@@ -121,6 +121,38 @@ nonisolated enum ProfileAggregator {
             coverage: coverage, unsupportedCharacteristics: unsupported,
             limitations: limitations(total: total, analyzed: analyzed, coverage: coverage, ordered: ordered),
             environment: EnvironmentProfileAggregator.aggregate(ordered))
+        profile.viewpoint = viewpoint(ordered)
+        return profile
+    }
+
+    // MARK: Viewpoint
+
+    /// Camera height and horizon tilt follow the camera-angle evidence: a photo contributes only
+    /// when its own camera-angle analysis ran on a subject and the value could be established.
+    static func viewpoint(_ ordered: [PhotoResult]) -> ViewpointProfile {
+        let height: CategoryFinding<CameraHeightLevel> = finding(
+            kind: nil, all: ordered,
+            possible: CameraHeightLevel.ordered.count,
+            name: { (l: CameraHeightLevel) -> String in l.phrase },
+            observe: { (r: PhotoResult) -> (CameraHeightLevel, EvidenceQuality)? in
+                let a = r.cameraAngle
+                guard a.heightLevel != .unknown else { return nil }
+                return (a.heightLevel, a.assessment.isDetermined ? a.assessment.quality : .low)
+            })
+        let dutch: CategoryFinding<DutchAngleCategory> = finding(
+            kind: nil, all: ordered,
+            possible: DutchAngleCategory.allCases.count - 1,
+            name: { (c: DutchAngleCategory) -> String in c.phrase },
+            observe: { (r: PhotoResult) -> (DutchAngleCategory, EvidenceQuality)? in
+                let c = r.cameraAngle.dutchAngle
+                return c == .unknown ? nil : (c, .moderate)
+            })
+        let angles = ordered.map(\.cameraAngle)
+        return ViewpointProfile(
+            heightLevel: height, dutchAngle: dutch,
+            elevation: NumericSummary.make(angles.compactMap(\.elevationDegrees)),
+            pitchDown: NumericSummary.make(angles.compactMap(\.pitchDownDegrees)),
+            roll: NumericSummary.make(angles.compactMap(\.imageRollDegrees)))
     }
 
     // MARK: Categorical finding
@@ -335,6 +367,8 @@ nonisolated enum ProfileAggregator {
         case .lowAngle: return "Low angle"
         case .eyeLevel: return "Eye level"
         case .highAngle: return "High angle"
+        case .birdsEye: return "Bird's eye"
+        case .wormsEye: return "Worm's eye"
         case .unknown: return "Unknown"
         }
     }

@@ -34,7 +34,7 @@ nonisolated struct CameraAngleFusionOutcome: Sendable, Equatable {
 nonisolated enum CameraAngleFusion {
 
     static func fuse(_ observations: [CameraAngleObservation], anchor: SubjectAnchor?) -> CameraAngleFusionOutcome {
-        let all: Set<CameraAngleCategory> = [.lowAngle, .eyeLevel, .highAngle]
+        let all = Set(CameraAngleRule.ordered)
         let decisive = observations.filter { $0.role == .decisive }
         let usable = decisive.filter { $0.validity.isValid && $0.elevation != nil }
         let unusable = decisive.filter { !usable.contains($0) }
@@ -131,8 +131,10 @@ nonisolated enum CameraAngleFusion {
 
         let headline: String
         switch category {
+        case .birdsEye: headline = "The camera appears to be steeply above the subject, looking almost straight down on them."
         case .highAngle: headline = "The camera appears to be above the subject's eyes, looking down on them."
         case .lowAngle: headline = "The camera appears to be below the subject's eyes, looking up at them."
+        case .wormsEye: headline = "The camera appears to be steeply below the subject, looking almost straight up at them."
         default: headline = "The camera appears to be at about the subject's eye height."
         }
         let basis = "Basis: " + usable.map(\.summary).joined(separator: " ")
@@ -158,24 +160,25 @@ nonisolated enum CameraAngleFusion {
         case .subjectGeometry: return "Subject geometry"
         case .headOrientation: return "Head orientation"
         case .depthTilt: return "Relative depth"
+        case .bodyPose3D: return "3D body pose"
         }
     }
 
     private static func list(_ categories: Set<CameraAngleCategory>) -> String {
-        let order: [CameraAngleCategory] = [.lowAngle, .eyeLevel, .highAngle]
-        let words = order.filter(categories.contains).map { c -> String in
+        let words = CameraAngleRule.ordered.filter(categories.contains).map { c -> String in
             switch c {
-            case .lowAngle: return "low angle"
-            case .eyeLevel: return "eye level"
+            case .birdsEye: return "bird's eye"
             case .highAngle: return "high angle"
+            case .eyeLevel: return "eye level"
+            case .lowAngle: return "low angle"
+            case .wormsEye: return "worm's eye"
             case .unknown: return "unknown"
             }
         }
         switch words.count {
         case 0: return "nothing"
         case 1: return words[0]
-        case 2: return "\(words[0]) or \(words[1])"
-        default: return "\(words[0]), \(words[1]) or \(words[2])"
+        default: return words.dropLast().joined(separator: ", ") + " or " + words[words.count - 1]
         }
     }
 }

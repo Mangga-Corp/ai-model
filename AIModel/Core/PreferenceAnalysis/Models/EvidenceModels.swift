@@ -7,6 +7,8 @@ import CoreGraphics
 nonisolated enum EvidenceSource: String, Sendable, CaseIterable, Hashable {
     case visionHumanRectangles
     case visionBodyPose
+    /// 3D body pose (iOS 17+): joints in metres and the camera's position relative to the body.
+    case visionBodyPose3D
     case visionFaceRectangles
     case visionHorizon
     case detrSegmentation
@@ -19,6 +21,7 @@ nonisolated enum EvidenceSource: String, Sendable, CaseIterable, Hashable {
         switch self {
         case .visionHumanRectangles: return "Vision: human rectangles"
         case .visionBodyPose:        return "Vision: body pose"
+        case .visionBodyPose3D:      return "Vision: 3D body pose"
         case .visionFaceRectangles:  return "Vision: face rectangles"
         case .visionHorizon:         return "Vision: horizon"
         case .detrSegmentation:      return "DETR ResNet-50 segmentation"
@@ -150,6 +153,32 @@ nonisolated struct PoseCandidate: Sendable, Equatable {
     }
 }
 
+/// One person's 3D body pose. Positions are in metres, relative to the body's root joint
+/// (between the hips), with +y pointing up the body. The camera position comes from the same
+/// observation, so camera and body are in one frame. Vision estimates the scale from an
+/// assumed body height unless the device measured depth (`isHeightMeasured`).
+nonisolated struct BodyPose3DCandidate: Sendable, Equatable {
+    /// The head centre in image space (top-left origin): matches this pose to a person box.
+    let headInImage: CGPoint?
+    /// Head centre, metres from the root.
+    let headX: Double
+    let headY: Double
+    let headZ: Double
+    /// Heights (y, metres from the root) of the shoulders, hips, knees and ankles, averaged
+    /// left and right; nil when Vision did not report the joint.
+    let shoulderY: Double?
+    let hipY: Double?
+    let kneeY: Double?
+    let ankleY: Double?
+    /// Camera position, metres from the root.
+    let cameraX: Double
+    let cameraY: Double
+    let cameraZ: Double
+    let bodyHeight: Double
+    let isHeightMeasured: Bool
+    let confidence: Double
+}
+
 /// A detected face. Angles are the HEAD's orientation relative to the camera as
 /// reported by Vision. They are not a camera-elevation measurement.
 nonisolated struct FaceCandidate: Sendable, Equatable {
@@ -271,6 +300,8 @@ nonisolated struct PhotoEvidence: Sendable, Equatable {
     var runs: [SourceRunRecord]
     /// Near-vertical edge segments, the raw input for scene-geometry evidence.
     var verticalLines: EvidenceOutcome<[ImageLineSegment]> = .skipped("not run")
+    /// 3D body poses with the camera's position relative to each body.
+    var bodyPose3D: EvidenceOutcome<[BodyPose3DCandidate]> = .skipped("not run")
 
     /// Problems worth surfacing, one line per failed or skipped source.
     var problems: [String] {
@@ -287,6 +318,7 @@ nonisolated struct PhotoEvidence: Sendable, Equatable {
         add(.fastViT, sceneContext)
         // `skipped` is the "not run" default used by tests; only a real failure is a problem.
         if case .failed(let message) = verticalLines { out.append("\(EvidenceSource.imageLineAnalysis.displayName): \(message)") }
+        if case .failed(let message) = bodyPose3D { out.append("\(EvidenceSource.visionBodyPose3D.displayName): \(message)") }
         return out
     }
 }

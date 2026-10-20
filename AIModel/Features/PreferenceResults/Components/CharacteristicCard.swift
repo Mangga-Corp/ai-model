@@ -118,8 +118,7 @@ enum ResultMeasurementRows {
         // What the evidence still allows, when it could not settle on one category.
         if let decision = a.decision, a.category == .unknown,
            decision.possibleCategories.count == 2 {
-            let order: [CameraAngleCategory] = [.lowAngle, .eyeLevel, .highAngle]
-            let names = order.filter(decision.possibleCategories.contains).map(\.label)
+            let names = CameraAngleRule.ordered.filter(decision.possibleCategories.contains).map(\.label)
             rows.append(.init(label: "Still possible", value: names.joined(separator: " or ")))
         }
         // Only evidence that contributed is shown as a measurement of this result.
@@ -142,6 +141,23 @@ enum ResultMeasurementRows {
         }
         if let roll = a.imageRollDegrees {
             rows.append(.init(label: "Image roll (context only)", value: String(format: "%.1f°", roll)))
+        }
+        if let mm = photo.preparation?.focalLength35mm {
+            rows.append(.init(label: "Lens (photo metadata)", value: String(format: "%.0f mm equivalent", mm)))
+        }
+        if let elevation = a.elevationDegrees {
+            rows.append(.init(label: "Estimated angle to the eyes",
+                              value: String(format: "%.0f° %@ (typical phone lens)", abs(elevation), elevation >= 0 ? "above" : "below")))
+        }
+        if let pitchDown = a.pitchDownDegrees {
+            rows.append(.init(label: "Estimated phone tilt",
+                              value: String(format: "%.0f° %@", abs(pitchDown), pitchDown >= 0 ? "down" : "up")))
+        }
+        if a.heightLevel != .unknown {
+            rows.append(.init(label: "Camera height", value: a.heightLevel.label))
+        }
+        if a.dutchAngle != .unknown {
+            rows.append(.init(label: "Horizon", value: a.dutchAngle.label))
         }
         return rows
     }

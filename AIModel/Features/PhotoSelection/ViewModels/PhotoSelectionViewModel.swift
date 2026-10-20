@@ -94,12 +94,15 @@ final class PhotoSelectionViewModel: ObservableObject {
 
                 // Load the image for thumbnail display and future analysis
                 let image = try await photoSelectionService.loadImage(from: result)
+                // The lens, for the camera-angle analysis. Optional: nil keeps the phone-lens assumption.
+                let focalLength = await photoSelectionService.loadFocalLength35mm(from: result)
 
                 let photo = ReferencePhoto(
                     id: UUID(),
                     localIdentifier: localIdentifier ?? UUID().uuidString,
                     image: image,
-                    selectionOrder: selectedPhotos.count
+                    selectionOrder: selectedPhotos.count,
+                    focalLength35mm: focalLength
                 )
                 selectedPhotos.append(photo)
             }

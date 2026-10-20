@@ -8,6 +8,7 @@ extension CameraAngleProvider {
         case .subjectGeometry: return "Subject eye line"
         case .headOrientation: return "Head orientation"
         case .depthTilt: return "Relative depth (head vs body)"
+        case .bodyPose3D: return "3D body pose (camera position)"
         }
     }
 
@@ -18,6 +19,7 @@ extension CameraAngleProvider {
         case .subjectGeometry: return "eye"
         case .headOrientation: return "face.smiling"
         case .depthTilt: return "square.3.layers.3d"
+        case .bodyPose3D: return "figure.stand"
         }
     }
 }

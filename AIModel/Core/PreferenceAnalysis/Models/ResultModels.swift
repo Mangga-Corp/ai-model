@@ -92,6 +92,10 @@ nonisolated enum CameraAngleCategory: String, Sendable, CaseIterable, Hashable {
     case lowAngle
     case eyeLevel
     case highAngle
+    /// Steeply above the subject, looking down (beyond `CameraAngleRule.extremeAngleDegrees`).
+    case birdsEye
+    /// Steeply below the subject, looking up (beyond `CameraAngleRule.extremeAngleDegrees`).
+    case wormsEye
     /// Unknown / insufficient evidence.
     case unknown
 }
@@ -146,6 +150,21 @@ nonisolated struct CameraAngleResult: Sendable, Equatable {
     var decision: CameraAngleDecisionSummary?
     /// The vertical-edge segments that supported a scene-geometry observation (overlay).
     var sceneLines: [ImageLineSegment] = []
+
+    // Viewpoint detail beyond the category (see `CameraViewpointModels`).
+
+    /// Best estimate of the camera's elevation relative to the eyes, in degrees (positive =
+    /// camera above the eyes), from the providers that decided the category. Nil unless the
+    /// category was determined. An inference under a typical phone lens, not a measurement.
+    var elevationDegrees: Double? = nil
+    /// Best estimate of the camera's pitch, in degrees (positive = tilted DOWN), from the
+    /// providers that decided the category. Nil unless the category was determined.
+    var pitchDownDegrees: Double? = nil
+    /// Which part of the subject's body the camera was level with, where the horizon line
+    /// (seen or implied by the pitch) crosses an upright subject's visible joints.
+    var heightLevel: CameraHeightLevel = .unknown
+    /// How far the horizon is tipped sideways, from Vision's horizon roll.
+    var dutchAngle: DutchAngleCategory = .unknown
 }
 
 // MARK: - 2. Subject framing
@@ -317,6 +336,8 @@ nonisolated struct ImagePreparationRecord: Sendable, Equatable {
     let preparedWidth: Int
     let preparedHeight: Int
     let longEdgeLimit: Int
+    /// 35 mm-equivalent focal length from the photo's EXIF, when known.
+    var focalLength35mm: Double? = nil
 
     var scale: Double { Double(preparedWidth) / Double(max(1, uprightWidth)) }
     var preparedSize: CGSize { CGSize(width: preparedWidth, height: preparedHeight) }

@@ -21,7 +21,7 @@ import Foundation
 nonisolated enum EnhanceTuner {
 
     static func settings(for stats: PhotoStatistics) -> PhotoEnhancer.Settings {
-        let dark = ramp(stats.meanLuminance, from: 0.42, to: 0.20)     // 0 at ≥0.42, 1 at ≤0.20
+        let dark = ramp(stats.meanLuminance, from: 0.42, to: 0.20)
         let bright = ramp(stats.meanLuminance, from: 0.62, to: 0.82)
         let flat = ramp(stats.contrast, from: 0.22, to: 0.10)
         let dull = ramp(stats.saturation, from: 0.30, to: 0.10)

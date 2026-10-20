@@ -1,5 +1,8 @@
 import Foundation
 
+/// SUPERSEDED by `ViewpointEvaluator` (the camera no longer uses this type; kept for its
+/// tests). It compared device PITCH with the legacy horizon angle, which is image ROLL.
+///
 /// Evaluates the device's physical tilt against the user's preferred horizon
 /// angle, producing tilt-specific guidance.
 ///

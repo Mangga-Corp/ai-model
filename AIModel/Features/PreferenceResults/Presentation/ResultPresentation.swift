@@ -39,6 +39,33 @@ extension CameraAngleCategory {
         case .lowAngle: return "Low angle"
         case .eyeLevel: return "Eye level"
         case .highAngle: return "High angle"
+        case .birdsEye: return "Bird's eye"
+        case .wormsEye: return "Worm's eye"
+        case .unknown: return "Unknown"
+        }
+    }
+}
+
+extension CameraHeightLevel {
+    var label: String {
+        switch self {
+        case .aboveHead: return "Above head"
+        case .eye: return "Eye level"
+        case .shoulder: return "Shoulder level"
+        case .hip: return "Hip level"
+        case .knee: return "Knee level"
+        case .ground: return "Ground level"
+        case .unknown: return "Unknown"
+        }
+    }
+}
+
+extension DutchAngleCategory {
+    var label: String {
+        switch self {
+        case .level: return "Straight horizon"
+        case .slightTilt: return "Slightly tilted"
+        case .dutch: return "Dutch angle"
         case .unknown: return "Unknown"
         }
     }

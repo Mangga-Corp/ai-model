@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import PhotosUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Protocol defining the photo selection and loading service.
 protocol PhotoSelectionServicing {
@@ -15,6 +16,13 @@ protocol PhotoSelectionServicing {
     /// downsampling. Keeping it in the ViewModel duplicated the layer the
     /// service already owns.
     func loadImage(from result: PHPickerResult) async throws -> UIImage?
+
+    /// The photo's 35 mm-equivalent focal length from its EXIF, or nil.
+    func loadFocalLength35mm(from result: PHPickerResult) async -> Double?
+}
+
+extension PhotoSelectionServicing {
+    func loadFocalLength35mm(from result: PHPickerResult) async -> Double? { nil }
 }
 
 /// PhotoSelectionService — handles image loading from selected photos.
@@ -91,6 +99,21 @@ final class PhotoSelectionService: PhotoSelectionServicing {
                 }
             }
         }
+    }
+
+    /// Reads the focal length from the picked file's own data, which keeps EXIF (the decoded
+    /// `UIImage` does not). Needs no photo-library permission. Nil on any failure: the
+    /// analysis then assumes a typical phone lens, as before.
+    func loadFocalLength35mm(from result: PHPickerResult) async -> Double? {
+        let provider = result.itemProvider
+        let type = UTType.image.identifier
+        guard provider.hasItemConformingToTypeIdentifier(type) else { return nil }
+        let data: Data? = await withCheckedContinuation { continuation in
+            _ = provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                continuation.resume(returning: data)
+            }
+        }
+        return data.flatMap(LensMetadataReader.focalLength35mm(imageData:))
     }
 
     /// Loads the CGImage from the ReferencePhoto's stored UIImage.

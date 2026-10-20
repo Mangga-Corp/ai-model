@@ -82,7 +82,8 @@ nonisolated enum SceneVerticalsProvider {
                         segmentationProblem: String?,
                         anchor: SubjectAnchor?,
                         aspect: Double,
-                        cropAllowance: Double) -> (observation: CameraAngleObservation, inliers: [ImageLineSegment]) {
+                        cropAllowance: Double,
+                        lens: LensAssumption = .unknown) -> (observation: CameraAngleObservation, inliers: [ImageLineSegment]) {
 
         func none(_ validity: ProviderValidity, _ summary: String) -> (CameraAngleObservation, [ImageLineSegment]) {
             (.unavailable(.sceneVerticals, .decisive, validity, summary: summary), [])
@@ -136,7 +137,7 @@ nonisolated enum SceneVerticalsProvider {
         let eyeY = Double(anchor.eyePoint.y)
         let spread = [fit.k, fit.k - 2 * fit.standardError, fit.k + 2 * fit.standardError]
 
-        let pitchDown = LensModel.interval(aspect: aspect) { f in
+        let pitchDown = LensModel.interval(aspect: aspect, lens: lens) { f in
             spread.map { -CameraGeometry.degrees(atan(f * $0)) }
         }
         guard abs(pitchDown.nominal) <= 35 else {
@@ -145,7 +146,7 @@ nonisolated enum SceneVerticalsProvider {
         }
         // Variants: tilt error bars x the eye offset shifted by a possible crop.
         let shifts = [0.0, -cropAllowance, cropAllowance]
-        let elevation = LensModel.interval(aspect: aspect) { f in
+        let elevation = LensModel.interval(aspect: aspect, lens: lens) { f in
             var values: [Double] = []
             for kk in spread {
                 for shift in shifts {
@@ -159,7 +160,8 @@ nonisolated enum SceneVerticalsProvider {
         // Quality: capped at moderate, then lowered by explicit weaknesses.
         var quality: EvidenceQuality = .moderate
         var limitations = [
-            "Assumes the photo was not perspective-corrected and was taken with a phone-like lens (about 24-35 mm equivalent). A possible crop of up to \(Int(cropAllowance * 100))% of the frame height is allowed for."
+            lens.knownMM.map { "Assumes the photo was not perspective-corrected. The lens (\(Int($0.rounded())) mm equivalent) comes from the photo's metadata. A possible crop of up to \(Int(cropAllowance * 100))% of the frame height is allowed for." }
+                ?? "Assumes the photo was not perspective-corrected and was taken with a phone-like lens (about 24-35 mm equivalent). A possible crop of up to \(Int(cropAllowance * 100))% of the frame height is allowed for."
         ]
         if fit.inliers.count < 10 {
             quality = quality.lowered()
@@ -181,7 +183,7 @@ nonisolated enum SceneVerticalsProvider {
         // Plain-language OBSERVATION. The verdict is the fusion's job: a provider's nominal
         // value can fall in a different category than the fused result when its
         // interval spans a boundary, so no conclusion is stated here.
-        let tiltUp = CameraGeometry.degrees(atan(LensModel.focalLength(equivalentMM: LensModel.nominalMM, aspect: aspect) * fit.k))
+        let tiltUp = CameraGeometry.degrees(atan(LensModel.focalLength(equivalentMM: lens.nominalMM, aspect: aspect) * fit.k))
         let tilt: CameraTilt = tiltUp > levelToleranceDegrees ? .up : (tiltUp < -levelToleranceDegrees ? .down : .level)
         let linesClause: String
         switch tilt {
