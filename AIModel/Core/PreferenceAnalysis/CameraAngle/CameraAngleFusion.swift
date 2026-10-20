@@ -161,6 +161,7 @@ nonisolated enum CameraAngleFusion {
         case .headOrientation: return "Head orientation"
         case .depthTilt: return "Relative depth"
         case .bodyPose3D: return "3D body pose"
+        case .viewpointModel: return "Viewpoint model"
         }
     }
 

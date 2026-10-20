@@ -21,6 +21,8 @@ nonisolated enum CameraAngleProvider: String, Sendable, CaseIterable, Hashable, 
     case depthTilt
     /// Camera position reconstructed with the subject's 3D body pose (Vision, iOS 17+).
     case bodyPose3D
+    /// The app's own viewpoint model: camera pitch and lens from the whole picture.
+    case viewpointModel
 
     var id: String { rawValue }
 }

@@ -98,11 +98,12 @@ actor DepthEvidenceModel {
 
 // MARK: - Model set
 
-/// The three Core ML models, created together so they can be released together.
+/// The Core ML models, created together so they can be released together.
 nonisolated final class AnalysisModels: @unchecked Sendable {
     let segmenter = DETRSegmenter()
     let depth = DepthEvidenceModel()
     let classifier = FastViTClassifier()
+    let calibration = CameraCalibrationModel()
 }
 
 // MARK: - Runner
@@ -111,6 +112,7 @@ nonisolated struct ModelEvidenceBundle: Sendable {
     var segmentation: EvidenceOutcome<SegmentationSummary>
     var depth: EvidenceOutcome<DepthSummary>
     var sceneContext: EvidenceOutcome<[ScoredLabel]>
+    var cameraCalibration: EvidenceOutcome<CameraCalibrationEstimate>
     var artifacts: PhotoArtifacts
     var records: [SourceRunRecord]
 }
@@ -123,15 +125,18 @@ nonisolated enum ModelEvidenceRunner {
         async let segmentation = runSegmentation(image, models)
         async let depth = runDepth(image, models)
         async let context = runClassifier(image, models)
+        async let calibration = runCalibration(image, models)
 
         let seg = await segmentation
         let dep = await depth
         let ctx = await context
+        let cal = await calibration
 
         return ModelEvidenceBundle(
             segmentation: seg.outcome, depth: dep.outcome, sceneContext: ctx.outcome,
+            cameraCalibration: cal.outcome,
             artifacts: PhotoArtifacts(segmentation: seg.grid, depth: dep.grid),
-            records: [seg.record, dep.record, ctx.record])
+            records: [seg.record, dep.record, ctx.record, cal.record])
     }
 
     // MARK: DETR
@@ -221,6 +226,33 @@ nonisolated enum ModelEvidenceRunner {
             let message = describe(error)
             return (.failed(message),
                     SourceRunRecord(source: .fastViT, state: .failed,
+                                    durationMilliseconds: start.elapsedMilliseconds, detail: message))
+        }
+    }
+
+    // MARK: Camera calibration
+
+    private static func runCalibration(_ image: CGImage, _ models: AnalysisModels) async
+        -> (outcome: EvidenceOutcome<CameraCalibrationEstimate>, record: SourceRunRecord) {
+        let start = ContinuousClock.now
+        do {
+            let e = try await models.calibration.estimate(image)
+            return (.produced(e),
+                    SourceRunRecord(source: .cameraCalibration, state: .produced,
+                                    durationMilliseconds: start.elapsedMilliseconds,
+                                    detail: String(format: "pitch %+.1f° ± %.1f, roll %+.1f° ± %.1f, focal %.2f",
+                                                   e.pitchUpDegrees, e.pitchSigmaDegrees,
+                                                   e.rollDegrees, e.rollSigmaDegrees, e.focalLength)))
+        } catch SceneModelError.missingModel(_) {
+            // Optional model: without it the other providers work as before.
+            let message = "CameraCalibration.mlpackage is not in the app."
+            return (.skipped(message),
+                    SourceRunRecord(source: .cameraCalibration, state: .skipped,
+                                    durationMilliseconds: start.elapsedMilliseconds, detail: message))
+        } catch {
+            let message = describe(error)
+            return (.failed(message),
+                    SourceRunRecord(source: .cameraCalibration, state: .failed,
                                     durationMilliseconds: start.elapsedMilliseconds, detail: message))
         }
     }

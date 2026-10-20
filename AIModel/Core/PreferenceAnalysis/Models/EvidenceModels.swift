@@ -14,6 +14,8 @@ nonisolated enum EvidenceSource: String, Sendable, CaseIterable, Hashable {
     case detrSegmentation
     case depthAnything
     case fastViT
+    /// The app's own viewpoint model (camera pitch, roll and focal length).
+    case cameraCalibration
     /// Plain image processing (edge detection), not a model.
     case imageLineAnalysis
 
@@ -27,6 +29,7 @@ nonisolated enum EvidenceSource: String, Sendable, CaseIterable, Hashable {
         case .detrSegmentation:      return "DETR ResNet-50 segmentation"
         case .depthAnything:         return "Depth Anything V2 Small"
         case .fastViT:               return "FastViT-T8 classifier"
+        case .cameraCalibration:     return "Camera calibration model"
         case .imageLineAnalysis:     return "Image line analysis (edges)"
         }
     }
@@ -195,6 +198,22 @@ nonisolated struct ImageRollEvidence: Sendable, Equatable {
     let confidence: Double
 }
 
+/// What the viewpoint model estimated about the camera that took the photo.
+/// Conventions match `DeviceAttitude` and `make_panorama_crops.py`.
+nonisolated struct CameraCalibrationEstimate: Sendable, Equatable {
+    /// Positive = camera tilted UP.
+    let pitchUpDegrees: Double
+    /// Positive = clockwise as the photographer sees it (right side down).
+    let rollDegrees: Double
+    /// Focal length in units of the photo's HEIGHT (same units as `LensModel`).
+    let focalLength: Double
+    /// One standard deviation of each estimate, as the model itself reports it.
+    let pitchSigmaDegrees: Double
+    let rollSigmaDegrees: Double
+    /// Standard deviation of log(focal length).
+    let focalLogSigma: Double
+}
+
 nonisolated struct ScoredLabel: Sendable, Equatable {
     let label: String
     let score: Double
@@ -302,6 +321,8 @@ nonisolated struct PhotoEvidence: Sendable, Equatable {
     var verticalLines: EvidenceOutcome<[ImageLineSegment]> = .skipped("not run")
     /// 3D body poses with the camera's position relative to each body.
     var bodyPose3D: EvidenceOutcome<[BodyPose3DCandidate]> = .skipped("not run")
+    /// The viewpoint model's estimate. Skipped (not a problem) when the model is not in the app.
+    var cameraCalibration: EvidenceOutcome<CameraCalibrationEstimate> = .skipped("not run")
 
     /// Problems worth surfacing, one line per failed or skipped source.
     var problems: [String] {
@@ -319,6 +340,7 @@ nonisolated struct PhotoEvidence: Sendable, Equatable {
         // `skipped` is the "not run" default used by tests; only a real failure is a problem.
         if case .failed(let message) = verticalLines { out.append("\(EvidenceSource.imageLineAnalysis.displayName): \(message)") }
         if case .failed(let message) = bodyPose3D { out.append("\(EvidenceSource.visionBodyPose3D.displayName): \(message)") }
+        if case .failed(let message) = cameraCalibration { out.append("\(EvidenceSource.cameraCalibration.displayName): \(message)") }
         return out
     }
 }

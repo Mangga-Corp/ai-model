@@ -19,7 +19,8 @@ nonisolated enum EvidenceCollector {
             segmentation: m.segmentation, depth: m.depth, sceneContext: m.sceneContext,
             runs: v.records + m.records + [lineRecord],
             verticalLines: verticalLines,
-            bodyPose3D: v.bodyPose3D)
+            bodyPose3D: v.bodyPose3D,
+            cameraCalibration: m.cameraCalibration)
         return (evidence, m.artifacts)
     }
 }
